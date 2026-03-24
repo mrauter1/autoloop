@@ -17,16 +17,16 @@ Autoloop is a stateful orchestration runtime for repository work. It runs plan, 
 Install from PyPI:
 
 ```bash
-pip install autoloop
+python3 -m pip install autoloop
 autoloop --help
 ```
 
 Install from this repository:
 
 ```bash
-python -m pip install -e .
+python3 -m pip install -e .
 autoloop --help
-python -m autoloop --help
+python3 -m autoloop --help
 ```
 
 Or use the bundled installer:
