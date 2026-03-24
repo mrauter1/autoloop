@@ -14,10 +14,10 @@ Autoloop is a stateful orchestration runtime for repository work. It runs plan, 
 
 ## Install
 
-Install from PyPI:
+Install from PyPI (recommended):
 
 ```bash
-pip install autoloop
+python -m pip install --upgrade autoloop
 autoloop --help
 ```
 
