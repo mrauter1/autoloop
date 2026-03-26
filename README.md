@@ -36,6 +36,56 @@ Or use the bundled installer:
 ```
 
 The installer sets up Autoloop itself and the packaged skill, but it does not install provider CLIs for you. Install `codex` or `claude` separately based on the provider you plan to run.
+Reruns are intentionally conservative: use `./install_autoloop.sh --dry-run` to preview changes, `--overwrite` to replace an existing launcher or skill file, `--recreate-venv` to replace an existing virtualenv, and `--skill-target both|codex|agents|none` to control where the packaged skill is installed.
+
+## Quickstart
+
+Put config in either:
+
+- `~/.config/autoloop/autoloop.yaml` (or `$XDG_CONFIG_HOME/autoloop/autoloop.yaml`) for global defaults
+- `/path/to/workspace/autoloop.yaml` for workspace-local overrides
+
+Minimal Codex config:
+
+```yaml
+provider:
+  name: codex
+```
+
+Minimal Claude config:
+
+```yaml
+provider:
+  name: claude
+```
+
+First run:
+
+```bash
+autoloop --workspace /path/to/workspace --intent "Describe the task you want shipped"
+```
+
+Expected success artifacts under the workspace:
+
+- `.autoloop/tasks/<task-id>/request.md`
+- `.autoloop/tasks/<task-id>/runs/<run-id>/raw_phase_log.md`
+- `.autoloop/tasks/<task-id>/runs/<run-id>/events.jsonl`
+
+Useful follow-up commands:
+
+```bash
+autoloop --workspace /path/to/workspace --list-tasks
+autoloop --workspace /path/to/workspace --task-id <task-id> --resume
+```
+
+Troubleshooting:
+
+| Symptom | Fix |
+| --- | --- |
+| `codex` is missing for the default setup | Install Codex with `npm i -g @openai/codex`, or switch to `provider.name: claude` and verify `claude auth status`. |
+| `autoloop` command is not found after running the installer | Add the installer bin directory to `PATH`, or run `python3 -m autoloop --help` from the repo checkout. |
+| Autoloop is not picking up your config | Put exactly one `autoloop.yaml` or `autoloop.config` file in the global config directory or workspace root. |
+| `git` is unavailable | Install `git`, or run Autoloop with `--no-git` if you do not need checkpoints. |
 
 ## Configuration
 

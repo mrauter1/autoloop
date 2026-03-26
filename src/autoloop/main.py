@@ -4257,13 +4257,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Do not initialize git or create git commits/checkpoints",
     )
-    git_group.add_argument(
-        "--no-no-git",
-        dest="no_git",
-        action="store_false",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
     return parser
 
 
