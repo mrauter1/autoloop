@@ -1,0 +1,33 @@
+# Test Strategy
+
+- Task ID: analyze-the-provided-code-review-comments-for-co-d5538787
+- Pair: test
+- Phase ID: verify-review-comment-applicability
+- Phase Directory Key: verify-review-comment-applicability
+- Phase Title: Verify installer review comments and only apply real gaps
+- Scope: phase-local producer artifact
+- Behaviors covered:
+  - `require_cmd` missing-command branch fails through `die()` via `test_installer_missing_python3_reports_require_cmd_failure`.
+  - Python version guard fails through `die()` via `test_installer_python_version_guard_uses_centralized_error`.
+  - Required repository path guard fails through `die()` via `test_installer_missing_required_repo_path_uses_centralized_error`.
+  - Existing installer success/rerun readiness paths remain covered by the surrounding installer subprocess suite.
+  - Parser surface preserves `--git` / `--no-git` and rejects `--no-no-git` via `test_build_arg_parser_exposes_explicit_git_flag_pair`.
+  - Resource/package surface remains covered by `tests/test_resources.py`.
+- Preserved invariants checked:
+  - `install_autoloop.sh` stays unchanged because all three reviewed branches already use centralized `die()`.
+  - Public git flag contract remains `--git` and `--no-git` only.
+  - Packaged template and README-linked resource expectations remain intact.
+- Failure paths and edge cases:
+  - Missing `python3` is forced with an isolated PATH containing only bash/dirname shims.
+  - Failing Python version is forced by shadowing `python3` with a stub that exits non-zero.
+  - Missing repository content is forced by running a copied installer from a fixture repo that omits `src/autoloop/skill/SKILL.md`.
+- Stabilization / flake control:
+  - All installer checks run as local subprocesses with temporary directories and no network dependencies.
+  - `AUTOLOOP_SKIP_PIP_UPGRADE=1` and `AUTOLOOP_SKIP_DEP_INSTALL=1` keep installer tests deterministic and fast.
+  - Parser/resource validation uses existing focused tests instead of broad suite execution.
+- Validation performed:
+  - `pytest tests/test_installer.py` -> `12 passed`
+  - `pytest tests/test_autoloop_observability.py -k test_build_arg_parser_exposes_explicit_git_flag_pair` -> `1 passed, 103 deselected`
+  - `pytest tests/test_resources.py` -> `3 passed`
+- Known gaps:
+  - No additional installer source change was required, so coverage stays targeted to the three reviewed failure branches plus adjacent parser/resource invariants.

@@ -1,0 +1,44 @@
+version: 1
+task_id: autoloop-improvement-instructions-please-impleme-8508e533
+request_snapshot_ref: /workspace/autoloop/.autoloop/tasks/autoloop-improvement-instructions-please-impleme-8508e533/runs/run-20260326T141433Z-5dc0310f/request.md
+phases:
+  - phase_id: ux-installer-docs-and-cli-hardening
+    title: Harden installer UX, quickstart docs, and git flag behavior
+    objective: Implement the requested installer safety/readiness changes, README quickstart, and git flag cleanup with regression coverage.
+    status: planned
+    in_scope:
+      - Add installer flags for dry-run, overwrite control, venv recreation confirmation, and skill target selection.
+      - Print a pre-flight mutation summary before installer writes and keep provider CLI checks non-blocking.
+      - Add explicit final readiness wording and exact next steps for missing prerequisites.
+      - Add README quickstart guidance for first-time Codex and Claude users.
+      - Remove the hidden --no-no-git parser alias while preserving runtime.no_git precedence.
+      - Update or add tests for installer behavior, parser behavior, config precedence, and touched docs/resources.
+    out_of_scope:
+      - Changing Autoloop runtime behavior beyond the public git flag cleanup.
+      - Installing or bootstrapping provider CLIs from the installer.
+      - Reworking the broader configuration schema or task-state layout.
+    dependencies: []
+    acceptance_criteria:
+      - id: AC-1
+        text: Installer reruns no longer silently overwrite existing artifacts, support dry-run, require explicit authorization before deleting an existing venv, and can limit skill installation targets.
+      - id: AC-2
+        text: Installer completion output clearly distinguishes installed and ready from installed but not ready based on the default Codex first-run path, while keeping missing provider CLIs non-fatal and providing exact next steps for Codex and optional Claude setup.
+      - id: AC-3
+        text: README includes a concise quickstart covering config placement, minimal Codex and Claude configs, first-run command, expected artifacts, resume/list commands, and troubleshooting.
+      - id: AC-4
+        text: Only public --git and --no-git flags remain, and tests confirm CLI-over-config precedence still behaves deterministically.
+      - id: AC-5
+        text: Relevant automated tests for touched installer, parser/config, and documentation surfaces pass.
+    deliverables:
+      - Updated install_autoloop.sh with explicit safety controls, dry-run planning, configurable skill targets, and readiness messaging.
+      - Updated README.md quickstart and troubleshooting guidance aligned with current runtime behavior.
+      - Updated src/autoloop/main.py git flag parser wiring and regression tests.
+      - Targeted automated test coverage and recorded verification results.
+    risks:
+      - Shell-script argument parsing may introduce partial-mutation paths unless all conflict checks happen before writes.
+      - Readiness wording may become misleading if it is not anchored to the default Codex first-run path and optional Claude opt-in guidance.
+      - Git flag cleanup could accidentally change no_git semantics if parser edits extend beyond the hidden alias.
+    rollback:
+      - Revert installer flag and conflict-gating changes if rerun behavior regresses, while preserving independent README updates.
+      - Restore prior installer summary wording only if the new status classification proves operationally confusing.
+      - Revert parser cleanup separately if any external dependency on the hidden alias is discovered.

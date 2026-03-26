@@ -149,7 +149,8 @@ def test_build_arg_parser_exposes_explicit_git_flag_pair():
     assert parser.parse_args([]).no_git is None
     assert parser.parse_args(["--git"]).no_git is False
     assert parser.parse_args(["--no-git"]).no_git is True
-    assert parser.parse_args(["--no-no-git"]).no_git is False
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--no-no-git"])
 
 
 def test_resolve_runtime_config_applies_global_local_and_cli_precedence(tmp_path: Path, monkeypatch):

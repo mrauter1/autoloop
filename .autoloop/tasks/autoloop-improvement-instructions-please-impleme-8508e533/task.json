@@ -1,0 +1,36 @@
+{
+  "task_id": "autoloop-improvement-instructions-please-impleme-8508e533",
+  "created_at": "2026-03-26T14:14:33.209113+00:00",
+  "request_text": "# Autoloop Improvement Instructions\n\nPlease implement fixes for the following UX/setup issues:\n\n1. **Installer safety and overwrite behavior**\n   - Add safer installer modes so existing installs are not silently overwritten.\n   - Add dry-run support.\n   - Require explicit confirmation/flag before deleting an existing venv.\n   - Make skill install targets configurable instead of always writing to both Codex and Agents skill directories.\n   - Print a clear pre-flight summary of planned mutations.\n\n2. **Quickstart in README**\n   - Add a concise quickstart section for first-time users:\n     - minimal `autoloop.yaml` for Codex and Claude,\n     - where to put config,\n     - first run command,\n     - expected success artifacts,\n     - resume/list tasks commands,\n     - short troubleshooting table.\n\n3. **Installer readiness messaging**\n   - Keep install non-blocking if provider CLI is missing.\n   - But make final status explicit:\n     - \"installed and ready\" vs \"installed but not ready\".\n   - Include exact next steps for missing prerequisites.\n\n4. **Git flag UX cleanup**\n   - Keep `--git` and `--no-git` support.\n   - Remove hidden/internal `--no-no-git` argument.\n   - Preserve deterministic config/CLI precedence behavior.\n   - Update/add tests for argument behavior and precedence.\n\nGeneral constraints:\n- Keep backward compatibility where reasonable.\n- Update tests and docs to match behavior.\n- Run tests relevant to touched code.\n- Provide a concise summary of changes and verification results.",
+  "request_updated_at": "2026-03-26T14:14:33.209178+00:00",
+  "phase_plan_path": "/workspace/autoloop/.autoloop/tasks/autoloop-improvement-instructions-please-impleme-8508e533/plan/phase_plan.yaml",
+  "phase_plan_version": 1,
+  "active_phase_selection": {
+    "run_id": "run-20260326T141433Z-5dc0310f",
+    "mode": "single",
+    "phase_ids": [
+      "ux-installer-docs-and-cli-hardening"
+    ],
+    "explicit": true,
+    "current_phase_index": 1,
+    "current_phase_id": null
+  },
+  "phase_status": {
+    "ux-installer-docs-and-cli-hardening": "completed"
+  },
+  "phase_history": [
+    {
+      "phase_id": "ux-installer-docs-and-cli-hardening",
+      "run_id": "run-20260326T141433Z-5dc0310f",
+      "status": "in_progress",
+      "ts": "2026-03-26T14:19:06.742876+00:00"
+    },
+    {
+      "phase_id": "ux-installer-docs-and-cli-hardening",
+      "run_id": "run-20260326T141433Z-5dc0310f",
+      "status": "completed",
+      "ts": "2026-03-26T14:30:28.068850+00:00",
+      "pair": "test"
+    }
+  ]
+}

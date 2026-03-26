@@ -1,0 +1,27 @@
+# Implementation Notes
+
+- Task ID: analyze-the-provided-code-review-comments-for-co-d5538787
+- Pair: implement
+- Phase ID: verify-review-comment-applicability
+- Phase Directory Key: verify-review-comment-applicability
+- Phase Title: Verify installer review comments and only apply real gaps
+- Scope: phase-local producer artifact
+- Files changed: `tests/test_installer.py`; `.autoloop/tasks/analyze-the-provided-code-review-comments-for-co-d5538787/decisions.txt`; `.autoloop/tasks/analyze-the-provided-code-review-comments-for-co-d5538787/implement/phases/verify-review-comment-applicability/implementation_notes.md`
+- Symbols touched: `build_installer_env`, `run_installer`, `write_command_shim`, `test_installer_missing_python3_reports_require_cmd_failure`, `test_installer_python_version_guard_uses_centralized_error`, `test_installer_missing_required_repo_path_uses_centralized_error`
+- Checklist mapping:
+  - Plan item 1: re-verified `install_autoloop.sh` branches for `require_cmd`, Python version, and required repository path checks; all already call `die()`.
+  - Plan item 2: left `install_autoloop.sh` unchanged because the review comments were non-actionable in the current worktree.
+  - Plan item 3: added subprocess coverage for the three reviewed installer failure branches and reran the requested git-flag/resource checks.
+- Applicability findings:
+  - `require_cmd` missing-command branch: non-actionable; `require_cmd()` already calls `die "required command not found: $1"`.
+  - Python version check branch: non-actionable; the failing version guard already calls `die "python3 version must be 3.10 or higher."`.
+  - Required repository path existence branch: non-actionable; the missing-path loop already calls `die "expected $required_path in repository root: $REPO_ROOT"`.
+- Assumptions: centralized error handling means these failure paths emit the `die()`-formatted `ERROR: ...` message on stderr.
+- Preserved invariants: `install_autoloop.sh` behavior and text were left unchanged; the public git flags remain `--git` and `--no-git`, and `--no-no-git` remains rejected.
+- Intended behavior changes: none in product code; only test coverage increased.
+- Known non-changes: no installer refactor, no parser changes, no resource packaging changes.
+- Expected side effects: installer regressions in the three reviewed failure paths are now caught by subprocess coverage.
+- Validation performed:
+  - `pytest tests/test_installer.py` -> `12 passed`
+  - `pytest tests/test_autoloop_observability.py -k test_build_arg_parser_exposes_explicit_git_flag_pair` -> `1 passed, 103 deselected`
+  - `pytest tests/test_resources.py` -> `3 passed`
