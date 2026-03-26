@@ -16,11 +16,23 @@ def write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def write_command_shim(directory: Path, command_name: str) -> None:
+    command_path = shutil.which(command_name)
+    if command_path is None:
+        return
+    write_executable(
+        directory / command_name,
+        f"#!/bin/sh\nexec {command_path} \"$@\"\n",
+    )
+
+
 def build_installer_env(
     tmp_path: Path,
     *,
     fake_codex: bool = False,
     fake_claude: bool = False,
+    fake_python3: str | None = None,
+    include_python3: bool = True,
     bin_on_path: bool = False,
 ) -> tuple[dict[str, str], Path, Path, Path, Path]:
     install_root = tmp_path / "install-root"
@@ -36,15 +48,22 @@ def build_installer_env(
         write_executable(fake_path_dir / "codex", "#!/usr/bin/env bash\nexit 0\n")
     if fake_claude:
         write_executable(fake_path_dir / "claude", "#!/usr/bin/env bash\nexit 0\n")
+    if fake_python3 is not None:
+        write_executable(fake_path_dir / "python3", fake_python3)
 
     path_entries = [str(fake_path_dir)]
-    for command_name in ("bash", "python3", "install", "cp", "rm", "chmod", "mkdir"):
-        command_path = shutil.which(command_name)
-        if command_path is None:
-            continue
-        command_dir = str(Path(command_path).parent)
-        if command_dir not in path_entries:
-            path_entries.append(command_dir)
+    if include_python3:
+        for command_name in ("bash", "python3", "install", "cp", "rm", "chmod", "mkdir"):
+            command_path = shutil.which(command_name)
+            if command_path is None:
+                continue
+            command_dir = str(Path(command_path).parent)
+            if command_dir not in path_entries:
+                path_entries.append(command_dir)
+    else:
+        # Keep the shell bootstrapping commands available while ensuring python3 is truly absent.
+        for command_name in ("bash", "dirname"):
+            write_command_shim(fake_path_dir, command_name)
     if bin_on_path:
         path_entries.append(str(bin_dir))
 
@@ -63,10 +82,16 @@ def build_installer_env(
     return env, install_root, bin_dir, codex_home, home_dir
 
 
-def run_installer(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_installer(
+    args: list[str],
+    env: dict[str, str],
+    *,
+    installer: Path = INSTALLER,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(INSTALLER), *args],
-        cwd=REPO_ROOT,
+        ["bash", str(installer), *args],
+        cwd=cwd or installer.parent,
         env=env,
         capture_output=True,
         text=True,
@@ -118,6 +143,54 @@ def test_installer_existing_venv_requires_recreate_flag(tmp_path: Path):
     assert result.returncode == 1
     assert "--recreate-venv" in result.stdout
     assert marker.read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_installer_missing_python3_reports_require_cmd_failure(tmp_path: Path):
+    env, _, _, _, _ = build_installer_env(tmp_path, include_python3=False)
+
+    result = run_installer(["--dry-run", "--skill-target", "none"], env)
+
+    assert result.returncode == 1
+    assert "ERROR: required command not found: python3" in result.stderr
+
+
+def test_installer_python_version_guard_uses_centralized_error(tmp_path: Path):
+    env, _, _, _, _ = build_installer_env(
+        tmp_path,
+        fake_python3="#!/usr/bin/env bash\nexit 1\n",
+    )
+
+    result = run_installer(["--dry-run", "--skill-target", "none"], env)
+
+    assert result.returncode == 1
+    assert "ERROR: python3 version must be 3.10 or higher." in result.stderr
+
+
+def test_installer_missing_required_repo_path_uses_centralized_error(tmp_path: Path):
+    fixture_repo = tmp_path / "fixture-repo"
+    fixture_repo.joinpath("src", "autoloop").mkdir(parents=True)
+    shutil.copy2(REPO_ROOT / "install_autoloop.sh", fixture_repo / "install_autoloop.sh")
+    shutil.copy2(REPO_ROOT / "pyproject.toml", fixture_repo / "pyproject.toml")
+    shutil.copy2(REPO_ROOT / "src" / "autoloop" / "main.py", fixture_repo / "src" / "autoloop" / "main.py")
+    shutil.copy2(
+        REPO_ROOT / "src" / "autoloop" / "loop_control.py",
+        fixture_repo / "src" / "autoloop" / "loop_control.py",
+    )
+    shutil.copytree(
+        REPO_ROOT / "src" / "autoloop" / "templates",
+        fixture_repo / "src" / "autoloop" / "templates",
+    )
+    env, _, _, _, _ = build_installer_env(tmp_path)
+
+    result = run_installer(
+        ["--dry-run", "--skill-target", "none"],
+        env,
+        installer=fixture_repo / "install_autoloop.sh",
+        cwd=fixture_repo,
+    )
+
+    assert result.returncode == 1
+    assert "ERROR: expected src/autoloop/skill/SKILL.md in repository root:" in result.stderr
 
 
 def test_installer_overwrite_and_recreate_flags_allow_safe_rerun(tmp_path: Path):

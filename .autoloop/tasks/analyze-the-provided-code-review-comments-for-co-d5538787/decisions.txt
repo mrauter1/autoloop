@@ -1,0 +1,9 @@
+<autoloop-decisions-header version="1" block_seq="1" owner="planner" phase_id="task-global" pair="plan" turn_seq="1" run_id="run-20260326T161007Z-b617b600" ts="2026-03-26T16:10:07.892895+00:00" />
+Treat the three reviewed install_autoloop.sh die() comments as potentially stale; implementation should only edit the script if current verification finds a branch that no longer funnels through die().
+Targeted validation for this task must explicitly preserve the public git flag pair --git and --no-git and continue rejecting --no-no-git.
+<autoloop-decisions-header version="1" block_seq="2" owner="planner" phase_id="task-global" pair="plan" turn_seq="2" run_id="run-20260326T161007Z-b617b600" ts="2026-03-26T16:12:45.754535+00:00" />
+Targeted validation for this task must execute the three reviewed installer failure branches with runtime evidence, preferably by extending the existing subprocess-based tests in tests/test_installer.py.
+<autoloop-decisions-header version="1" block_seq="3" owner="implementer" phase_id="verify-review-comment-applicability" pair="implement" turn_seq="1" run_id="run-20260326T161007Z-b617b600" ts="2026-03-26T16:14:08.564217+00:00" />
+Verified the require_cmd missing-command branch, python version guard, and required repository path guard already terminate through die(); leave install_autoloop.sh unchanged and add subprocess tests as runtime evidence.
+<autoloop-decisions-header version="1" block_seq="4" owner="test_author" phase_id="verify-review-comment-applicability" pair="test" turn_seq="1" run_id="run-20260326T161007Z-b617b600" ts="2026-03-26T16:19:11.676107+00:00" />
+The missing-python3 installer test uses an isolated PATH shim for bash and dirname so require_cmd fails deterministically without weakening the normal installer subprocess coverage.

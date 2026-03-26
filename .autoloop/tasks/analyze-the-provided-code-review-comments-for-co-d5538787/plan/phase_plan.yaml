@@ -1,0 +1,37 @@
+version: 1
+task_id: analyze-the-provided-code-review-comments-for-co-d5538787
+request_snapshot_ref: /workspace/autoloop/.autoloop/tasks/analyze-the-provided-code-review-comments-for-co-d5538787/runs/run-20260326T161007Z-b617b600/request.md
+phases:
+  - phase_id: verify-review-comment-applicability
+    title: Verify installer review comments and only apply real gaps
+    objective: Confirm whether the three cited installer branches already use centralized die() handling, avoid redundant edits, and validate the requested installer/parser/resource surfaces.
+    status: planned
+    in_scope:
+      - Verify the require_cmd missing-command branch, Python version branch, and required repository path branch in install_autoloop.sh.
+      - Treat already-satisfied review comments as non-actionable and require explicit implementation notes explaining why.
+      - Apply only a minimal install_autoloop.sh change if one of the reviewed branches still bypasses die().
+      - Add or update targeted installer subprocess coverage so the three reviewed failure branches are executed, then run that coverage together with git-flag parser and resource tests.
+    out_of_scope:
+      - Refactoring unrelated installer logic or rewriting error text without a verified behavior gap.
+      - Changing public CLI semantics beyond preserving the existing --git and --no-git contract.
+      - Broad repository cleanup unrelated to the reviewed comments.
+    dependencies: []
+    acceptance_criteria:
+      - id: AC-1
+        text: The implementation explicitly determines whether each of the three reviewed installer branches is already satisfied or still needs a change.
+      - id: AC-2
+        text: install_autoloop.sh is edited only if a reviewed branch is verified to bypass centralized die() handling; otherwise it remains unchanged and the comments are documented as non-actionable.
+      - id: AC-3
+        text: Validation executes the three reviewed installer failure branches plus parser/resource checks, including preservation of --git and --no-git and rejection of --no-no-git.
+      - id: AC-4
+        text: The final summary concisely states what review comments were applicable and what changed, if anything.
+    deliverables:
+      - Verified applicability findings for the three installer review comments, captured in implementation notes.
+      - Any minimal installer patch required to restore die() consistency, or an explicit no-code-change outcome.
+      - Targeted test results covering the three reviewed installer failure branches plus parser/resource coverage.
+    risks:
+      - A stale review comment could trigger unnecessary shell-script churn unless verification gates all edits.
+      - Narrow test selection could miss either the reviewed installer failure branches or the explicit git-flag contract if branch-specific and parser coverage are not both included.
+    rollback:
+      - Revert any installer edit if it changes behavior beyond restoring a verified die() inconsistency.
+      - Keep the applicability findings even if a speculative code change is rolled back.
