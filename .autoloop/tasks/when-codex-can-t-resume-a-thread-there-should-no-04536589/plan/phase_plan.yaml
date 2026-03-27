@@ -1,0 +1,41 @@
+version: 1
+task_id: when-codex-can-t-resume-a-thread-there-should-no-04536589
+request_snapshot_ref: /workspace/autoloop/.autoloop/tasks/when-codex-can-t-resume-a-thread-there-should-no-04536589/runs/run-20260327T113458Z-91a8aeee/request.md
+phases:
+  - phase_id: codex-resume-fallback
+    title: Recover from stale Codex thread resumes
+    objective: Downgrade resume-only Codex thread failures to a warning and restart the affected phase in a fresh thread with the existing bootstrap context.
+    status: planned
+    in_scope:
+      - Detect Codex provider failures that occur specifically while resuming an existing saved thread id.
+      - Warn and record recovery details instead of fatalling immediately for that narrow failure case.
+      - Clear stale session state, rebuild the phase prompt as a fresh-thread bootstrap, and retry once in start mode.
+      - Preserve existing fatal behavior for fresh-start failures, Claude failures, and provider mismatch cases.
+      - Add targeted automated coverage for the fallback and the non-fallback fatal path.
+    out_of_scope:
+      - Changing session-file schema or cross-provider resume semantics.
+      - Recovering Claude resume failures.
+      - Altering the existing missing-session or missing-thread-id recovery behavior.
+    dependencies: []
+    acceptance_criteria:
+      - id: AC-1
+        text: When a saved Codex thread id cannot be resumed, Autoloop emits a warning and retries the phase once in start mode instead of exiting fatally on the first failure.
+      - id: AC-2
+        text: The fallback retry uses the same fresh-thread bootstrap contract as any other new thread, including immutable request context and phased bootstrap details when applicable.
+      - id: AC-3
+        text: Raw logs capture that a resume recovery occurred and preserve enough failure detail to diagnose the original resume failure.
+      - id: AC-4
+        text: Non-resume Codex failures, Claude failures, and provider mismatch scenarios remain fatal.
+      - id: AC-5
+        text: Targeted automated tests for the fallback path and preserved fatal paths pass.
+    deliverables:
+      - Updated Codex phase-turn runtime logic that retries resume failures as a fresh-thread start once.
+      - Raw-log warning/recovery behavior aligned with existing session recovery observability.
+      - Regression tests covering the recovered resume path and preserved fatal cases.
+    risks:
+      - The retry may accidentally reuse the resume prompt and omit the new-thread bootstrap context.
+      - Overbroad fallback conditions could hide unrelated provider failures.
+      - Recovery logging may be too weak to explain why a new thread was started.
+    rollback:
+      - Revert the resume-fallback branch and return to the current fatal-on-resume-failure behavior.
+      - Keep any independent test refactors only if they still describe current runtime behavior.
