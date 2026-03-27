@@ -1985,6 +1985,334 @@ def test_run_provider_phase_logs_claude_provider_failures_before_fatal(tmp_path:
     assert "entry=provider_failure" in run_raw_text
 
 
+def test_run_provider_phase_recovers_from_stale_codex_resume_with_fresh_phase_bootstrap(
+    tmp_path: Path, monkeypatch
+):
+    request_file = tmp_path / "request.md"
+    request_file.write_text("Implement feature X\n", encoding="utf-8")
+    task_raw_phase_log = tmp_path / "task_raw_phase_log.md"
+    task_raw_phase_log.write_text("# task raw\n", encoding="utf-8")
+    run_raw_phase_log = tmp_path / "run_raw_phase_log.md"
+    run_raw_phase_log.write_text(
+        "# run raw\n\n---\nrun_id=run-1 | entry=clarification\n---\nQuestion:\nNeed guardrail?\n\nAnswer:\nYes.\n",
+        encoding="utf-8",
+    )
+    decisions_file = tmp_path / "decisions.txt"
+    decisions_file.write_text("", encoding="utf-8")
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text(
+        "\n".join(
+            [
+                json.dumps({"event_type": "phase_started", "phase_id": "phase-1"}),
+                json.dumps({"event_type": "phase_completed", "phase_id": "phase-1"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    task_dir = tmp_path / ".autoloop" / "tasks" / "task-1"
+    prior_phase_dir = task_dir / "implement" / "phases" / "phase-1"
+    prior_phase_dir.mkdir(parents=True, exist_ok=True)
+    (prior_phase_dir / "implementation_notes.md").write_text("# prior notes\n", encoding="utf-8")
+    phase_dir = task_dir / "implement" / "phases" / "phase-2"
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    criteria_file = phase_dir / "criteria.md"
+    feedback_file = phase_dir / "feedback.md"
+    implementation_notes = phase_dir / "implementation_notes.md"
+    criteria_file.write_text("- [ ] done\n", encoding="utf-8")
+    feedback_file.write_text("# feedback\n", encoding="utf-8")
+    implementation_notes.write_text("# notes\n", encoding="utf-8")
+    session_file = tmp_path / "phase-session.json"
+    autoloop.save_session_state(
+        session_file,
+        autoloop.SessionState(
+            mode="persistent",
+            provider="codex",
+            session_id="stale-thread",
+            created_at="2026-03-27T00:00:00Z",
+        ),
+    )
+    artifact_bundle = autoloop.ArtifactBundle(
+        pair="implement",
+        scope="phase-local",
+        artifact_dir=phase_dir,
+        criteria_file=criteria_file,
+        feedback_file=feedback_file,
+        artifact_files={
+            "criteria.md": criteria_file,
+            "feedback.md": feedback_file,
+            "implementation_notes.md": implementation_notes,
+        },
+        allowed_verifier_prefixes=(".autoloop/tasks/task-1/implement/phases/phase-2/",),
+        phase_id="phase-2",
+        phase_dir_key="phase-2",
+        phase_title="Phase 2",
+    )
+    selection = autoloop.ResolvedPhaseSelection(
+        phase_mode="single",
+        phase_ids=("phase-2",),
+        phases=(
+            autoloop.PhasePlanPhase(
+                phase_id="phase-2",
+                title="Phase 2",
+                objective="Deliver phase 2",
+                in_scope=("code path A",),
+                out_of_scope=(),
+                dependencies=("phase-1",),
+                acceptance_criteria=(autoloop.PhasePlanCriterion(id="AC-1", text="done"),),
+                deliverables=("code",),
+                risks=(),
+                rollback=(),
+                status="planned",
+            ),
+        ),
+        explicit=True,
+    )
+
+    observed_calls: list[dict[str, object]] = []
+    warnings: list[str] = []
+
+    def fake_execute_provider_turn(provider_runtime, *, cwd, prompt, session_id, append_system_prompt_text=None):
+        observed_calls.append(
+            {
+                "provider": provider_runtime.name,
+                "prompt": prompt,
+                "session_id": session_id,
+                "append_system_prompt_text": append_system_prompt_text,
+            }
+        )
+        if len(observed_calls) == 1:
+            raise autoloop.ProviderExecutionError(
+                provider_name="codex",
+                message="[!] Codex CLI failed with exit code 7.",
+                raw_output="STDOUT:\nresume failed\n\nSTDERR:\nstale thread",
+                command_mode="resume",
+            )
+        return autoloop.ProviderTurnResult(
+            stdout="assistant output",
+            session_id="fresh-thread",
+            raw_output="STDOUT:\nsuccess",
+            command_mode="start",
+            provider_metadata={},
+        )
+
+    monkeypatch.setattr(autoloop, "execute_provider_turn", fake_execute_provider_turn)
+    monkeypatch.setattr(autoloop, "warn", lambda message: warnings.append(message))
+
+    stdout = autoloop.run_provider_phase(
+        autoloop.ProviderRuntime(name="codex", codex_command=fake_codex_command()),
+        tmp_path,
+        "templates/implement_producer.md",
+        "Prompt body\n",
+        "producer",
+        "implement",
+        1,
+        1,
+        "run-1",
+        request_file,
+        session_file,
+        artifact_bundle,
+        run_raw_phase_log,
+        task_raw_phase_log,
+        events_file,
+        task_dir,
+        decisions_file,
+        active_phase_selection=selection,
+        prior_phase_ids=("phase-1",),
+        prior_phase_keys=("phase-1",),
+    )
+
+    assert stdout == "assistant output"
+    assert [call["session_id"] for call in observed_calls] == ["stale-thread", None]
+    assert warnings == [
+        "Saved Codex thread id `stale-thread` could not be resumed for implement:producer; restarting this phase in a new thread."
+    ]
+
+    resumed_prompt = observed_calls[0]["prompt"]
+    fresh_prompt = observed_calls[1]["prompt"]
+    assert "RESUMED THREAD ID: stale-thread" in resumed_prompt
+    assert "THREAD STATUS: new thread starts on this turn." not in resumed_prompt
+    assert "THREAD STATUS: new thread starts on this turn." in fresh_prompt
+    assert "INITIAL REQUEST SNAPSHOT:" in fresh_prompt
+    assert "AUTHORITATIVE CLARIFICATIONS TO DATE:" in fresh_prompt
+    assert "PRIOR PHASE STATUS IN THIS RUN:" in fresh_prompt
+    assert "phase-1: phase_started" in fresh_prompt
+    assert "phase-1: phase_completed" in fresh_prompt
+    assert ".autoloop/tasks/task-1/implement/phases/phase-1/implementation_notes.md" in fresh_prompt
+    assert "ACTIVE PHASE EXECUTION CONTRACT:" in fresh_prompt
+    assert "RESUMED THREAD ID: stale-thread" not in fresh_prompt
+
+    session_payload = json.loads(session_file.read_text(encoding="utf-8"))
+    assert session_payload["provider"] == "codex"
+    assert session_payload["session_id"] == "fresh-thread"
+    assert session_payload["thread_id"] == "fresh-thread"
+
+    task_raw_text = task_raw_phase_log.read_text(encoding="utf-8")
+    run_raw_text = run_raw_phase_log.read_text(encoding="utf-8")
+    assert "entry=session_recovery" in task_raw_text
+    assert "stale_session_id=stale-thread" in task_raw_text
+    assert "warning=Saved Codex thread id `stale-thread` could not be resumed" in task_raw_text
+    assert "STDERR:\nstale thread" in task_raw_text
+    assert "entry=session_recovery" in run_raw_text
+    assert "entry=phase_output" in run_raw_text
+
+
+def test_run_provider_phase_keeps_codex_start_failures_fatal(tmp_path: Path, monkeypatch):
+    request_file = tmp_path / "request.md"
+    request_file.write_text("Implement feature X\n", encoding="utf-8")
+    task_raw_phase_log = tmp_path / "task_raw_phase_log.md"
+    task_raw_phase_log.write_text("# task raw\n", encoding="utf-8")
+    run_raw_phase_log = tmp_path / "run_raw_phase_log.md"
+    run_raw_phase_log.write_text("# run raw\n", encoding="utf-8")
+    decisions_file = tmp_path / "decisions.txt"
+    decisions_file.write_text("", encoding="utf-8")
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text("", encoding="utf-8")
+    session_file = tmp_path / "session.json"
+    artifact_bundle = autoloop.ArtifactBundle(
+        pair="plan",
+        scope="task-global",
+        artifact_dir=tmp_path,
+        criteria_file=tmp_path / "criteria.md",
+        feedback_file=tmp_path / "feedback.md",
+        artifact_files={},
+        allowed_verifier_prefixes=(),
+    )
+
+    monkeypatch.setattr(
+        autoloop,
+        "execute_provider_turn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            autoloop.ProviderExecutionError(
+                provider_name="codex",
+                message="[!] Codex CLI failed with exit code 9.",
+                raw_output="STDOUT:\nboom\n\nSTDERR:\ninvalid prompt",
+                command_mode="start",
+            )
+        ),
+    )
+    monkeypatch.setattr(autoloop, "fatal", lambda message, exit_code=1: (_ for _ in ()).throw(RuntimeError(message)))
+
+    with pytest.raises(RuntimeError, match="Codex CLI failed with exit code 9"):
+        autoloop.run_provider_phase(
+            autoloop.ProviderRuntime(name="codex", codex_command=fake_codex_command()),
+            tmp_path,
+            "templates/plan_producer.md",
+            "Prompt body\n",
+            "producer",
+            "plan",
+            1,
+            1,
+            "run-1",
+            request_file,
+            session_file,
+            artifact_bundle,
+            run_raw_phase_log,
+            task_raw_phase_log,
+            events_file,
+            tmp_path,
+            decisions_file,
+        )
+
+    task_raw_text = task_raw_phase_log.read_text(encoding="utf-8")
+    run_raw_text = run_raw_phase_log.read_text(encoding="utf-8")
+    assert "entry=provider_failure" in task_raw_text
+    assert "provider=codex" in task_raw_text
+    assert "mode=start" in task_raw_text
+    assert "entry=session_recovery" not in task_raw_text
+    assert "entry=provider_failure" in run_raw_text
+
+
+def test_run_provider_phase_fatals_when_codex_resume_recovery_retry_fails(tmp_path: Path, monkeypatch):
+    request_file = tmp_path / "request.md"
+    request_file.write_text("Implement feature X\n", encoding="utf-8")
+    task_raw_phase_log = tmp_path / "task_raw_phase_log.md"
+    task_raw_phase_log.write_text("# task raw\n", encoding="utf-8")
+    run_raw_phase_log = tmp_path / "run_raw_phase_log.md"
+    run_raw_phase_log.write_text("# run raw\n", encoding="utf-8")
+    decisions_file = tmp_path / "decisions.txt"
+    decisions_file.write_text("", encoding="utf-8")
+    events_file = tmp_path / "events.jsonl"
+    events_file.write_text("", encoding="utf-8")
+    session_file = tmp_path / "session.json"
+    artifact_bundle = autoloop.ArtifactBundle(
+        pair="plan",
+        scope="task-global",
+        artifact_dir=tmp_path,
+        criteria_file=tmp_path / "criteria.md",
+        feedback_file=tmp_path / "feedback.md",
+        artifact_files={},
+        allowed_verifier_prefixes=(),
+    )
+    autoloop.save_session_state(
+        session_file,
+        autoloop.SessionState(
+            mode="persistent",
+            provider="codex",
+            session_id="stale-thread",
+            created_at="2026-03-27T00:00:00Z",
+        ),
+    )
+
+    observed_session_ids: list[object] = []
+    warnings: list[str] = []
+
+    def fake_execute_provider_turn(*args, **kwargs):
+        observed_session_ids.append(kwargs["session_id"])
+        if len(observed_session_ids) == 1:
+            raise autoloop.ProviderExecutionError(
+                provider_name="codex",
+                message="[!] Codex CLI failed with exit code 7.",
+                raw_output="STDOUT:\nresume failed\n\nSTDERR:\nstale thread",
+                command_mode="resume",
+            )
+        raise autoloop.ProviderExecutionError(
+            provider_name="codex",
+            message="[!] Codex CLI failed with exit code 8.",
+            raw_output="STDOUT:\nretry failed\n\nSTDERR:\nnetwork",
+            command_mode="start",
+        )
+
+    monkeypatch.setattr(autoloop, "execute_provider_turn", fake_execute_provider_turn)
+    monkeypatch.setattr(autoloop, "warn", lambda message: warnings.append(message))
+    monkeypatch.setattr(autoloop, "fatal", lambda message, exit_code=1: (_ for _ in ()).throw(RuntimeError(message)))
+
+    with pytest.raises(RuntimeError, match="Codex CLI failed with exit code 8"):
+        autoloop.run_provider_phase(
+            autoloop.ProviderRuntime(name="codex", codex_command=fake_codex_command()),
+            tmp_path,
+            "templates/plan_producer.md",
+            "Prompt body\n",
+            "producer",
+            "plan",
+            1,
+            1,
+            "run-1",
+            request_file,
+            session_file,
+            artifact_bundle,
+            run_raw_phase_log,
+            task_raw_phase_log,
+            events_file,
+            tmp_path,
+            decisions_file,
+        )
+
+    assert observed_session_ids == ["stale-thread", None]
+    assert warnings == [
+        "Saved Codex thread id `stale-thread` could not be resumed for plan:producer; restarting this phase in a new thread."
+    ]
+
+    task_raw_text = task_raw_phase_log.read_text(encoding="utf-8")
+    run_raw_text = run_raw_phase_log.read_text(encoding="utf-8")
+    assert "entry=session_recovery" in task_raw_text
+    assert "entry=provider_failure" in task_raw_text
+    assert "stale_session_id=stale-thread" in task_raw_text
+    assert "STDERR:\nnetwork" in task_raw_text
+    assert "entry=session_recovery" in run_raw_text
+    assert "entry=provider_failure" in run_raw_text
+
+
 def test_tracked_autoloop_paths_excludes_runs_directory():
     tracked = autoloop.tracked_autoloop_paths(".autoloop/tasks/task-1", "implement")
     assert ".autoloop/tasks/task-1/runs/" not in tracked

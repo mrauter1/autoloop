@@ -2930,38 +2930,45 @@ def run_provider_phase(
         context=f"resume {pair_name}:{phase_name}",
     )
     session_state.mode = "persistent"
-    include_request_snapshot = session_state.session_id is None
-    prompt_kwargs = dict(
-        cwd=cwd,
-        request_file=request_file,
-        run_raw_phase_log=run_raw_phase_log,
-        decisions_file=decisions_file,
-        pair_name=pair_name,
-        phase_name=phase_name,
-        cycle_num=cycle_num,
-        attempt_num=attempt_num,
-        run_id=run_id,
-        session_state=session_state,
-        include_request_snapshot=include_request_snapshot,
-        artifact_bundle=artifact_bundle,
-        session_file=session_file,
-        is_fresh_phase_thread=include_request_snapshot and pair_name in PHASED_PAIRS,
-        events_file=events_file,
-        task_dir=task_dir,
-        active_phase_selection=active_phase_selection,
-        prior_phase_ids=prior_phase_ids,
-        prior_phase_keys=prior_phase_keys,
-    )
-    append_system_prompt_text: Optional[str] = None
-    if provider_runtime.name == "claude":
-        prompt_payload = build_phase_preamble(**prompt_kwargs)
-        append_system_prompt_text = build_claude_append_system_prompt(rendered_template_text)
-    else:
-        prompt_payload = build_phase_prompt(
-            template_provenance=template_provenance,
-            rendered_template_text=rendered_template_text,
-            **prompt_kwargs,
+
+    def build_prompt_payload(current_session_state: SessionState) -> Tuple[str, Optional[str]]:
+        include_request_snapshot = current_session_state.session_id is None
+        prompt_kwargs = dict(
+            cwd=cwd,
+            request_file=request_file,
+            run_raw_phase_log=run_raw_phase_log,
+            decisions_file=decisions_file,
+            pair_name=pair_name,
+            phase_name=phase_name,
+            cycle_num=cycle_num,
+            attempt_num=attempt_num,
+            run_id=run_id,
+            session_state=current_session_state,
+            include_request_snapshot=include_request_snapshot,
+            artifact_bundle=artifact_bundle,
+            session_file=session_file,
+            is_fresh_phase_thread=include_request_snapshot and pair_name in PHASED_PAIRS,
+            events_file=events_file,
+            task_dir=task_dir,
+            active_phase_selection=active_phase_selection,
+            prior_phase_ids=prior_phase_ids,
+            prior_phase_keys=prior_phase_keys,
         )
+        if provider_runtime.name == "claude":
+            return (
+                build_phase_preamble(**prompt_kwargs),
+                build_claude_append_system_prompt(rendered_template_text),
+            )
+        return (
+            build_phase_prompt(
+                template_provenance=template_provenance,
+                rendered_template_text=rendered_template_text,
+                **prompt_kwargs,
+            ),
+            None,
+        )
+
+    prompt_payload, append_system_prompt_text = build_prompt_payload(session_state)
 
     print(f"[*] Spawning {pair_name}:{phase_name} agent...")
     try:
@@ -2973,18 +2980,77 @@ def run_provider_phase(
             append_system_prompt_text=append_system_prompt_text,
         )
     except ProviderExecutionError as exc:
-        log_provider_failure_and_fatal(
-            provider_runtime=provider_runtime,
-            error=exc,
-            raw_logs=(raw_phase_log, run_raw_phase_log),
-            run_id=run_id,
-            context="phase_turn",
-            pair=pair_name,
-            phase=phase_name,
-            cycle=cycle_num,
-            attempt=attempt_num,
-            template_provenance=template_provenance,
-        )
+        if provider_runtime.name == "codex" and session_state.session_id and exc.command_mode == "resume":
+            stale_session_id = session_state.session_id
+            warning_message = (
+                f"Saved Codex thread id `{stale_session_id}` could not be resumed for {pair_name}:{phase_name}; "
+                "restarting this phase in a new thread."
+            )
+            warn(warning_message)
+            recovery_body = "\n".join(
+                [
+                    f"provider={provider_runtime.name}",
+                    "context=phase_turn",
+                    f"template={template_provenance}",
+                    "failed_mode=resume",
+                    f"stale_session_id={stale_session_id}",
+                    f"warning={warning_message}",
+                    f"error={exc.message}",
+                    "",
+                    exc.raw_output,
+                ]
+            )
+            for raw_log in (raw_phase_log, run_raw_phase_log):
+                append_runtime_raw_log(
+                    raw_log,
+                    run_id,
+                    "session_recovery",
+                    recovery_body,
+                    pair=pair_name,
+                    phase=phase_name,
+                    cycle=cycle_num,
+                    attempt=attempt_num,
+                    thread_id=stale_session_id,
+                )
+            session_state.set_session_id(None)
+            session_state.provider_metadata = {}
+            save_session_state(session_file, session_state)
+            prompt_payload, append_system_prompt_text = build_prompt_payload(session_state)
+            print(f"[*] Restarting {pair_name}:{phase_name} agent in a new Codex thread...")
+            try:
+                turn_result = execute_provider_turn(
+                    provider_runtime,
+                    cwd=cwd,
+                    prompt=prompt_payload,
+                    session_id=session_state.session_id,
+                    append_system_prompt_text=append_system_prompt_text,
+                )
+            except ProviderExecutionError as retry_exc:
+                log_provider_failure_and_fatal(
+                    provider_runtime=provider_runtime,
+                    error=retry_exc,
+                    raw_logs=(raw_phase_log, run_raw_phase_log),
+                    run_id=run_id,
+                    context="phase_turn",
+                    pair=pair_name,
+                    phase=phase_name,
+                    cycle=cycle_num,
+                    attempt=attempt_num,
+                    template_provenance=template_provenance,
+                )
+        else:
+            log_provider_failure_and_fatal(
+                provider_runtime=provider_runtime,
+                error=exc,
+                raw_logs=(raw_phase_log, run_raw_phase_log),
+                run_id=run_id,
+                context="phase_turn",
+                pair=pair_name,
+                phase=phase_name,
+                cycle=cycle_num,
+                attempt=attempt_num,
+                template_provenance=template_provenance,
+            )
     stdout = turn_result.stdout
     session_state.set_provider(provider_runtime.name)
     session_state.set_session_id(turn_result.session_id)

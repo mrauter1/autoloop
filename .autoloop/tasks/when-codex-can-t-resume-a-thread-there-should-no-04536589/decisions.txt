@@ -1,0 +1,8 @@
+<autoloop-decisions-header version="1" block_seq="1" owner="planner" phase_id="task-global" pair="plan" turn_seq="1" run_id="run-20260327T113458Z-91a8aeee" ts="2026-03-27T11:34:58.761766+00:00" />
+Apply the non-fatal recovery only to Codex resume failures with an existing saved thread id; do not widen it to fresh-start failures, Claude failures, or provider mismatch handling.
+The fallback retry must rebuild the phase prompt as a fresh thread bootstrap after clearing the stale session id so the new thread receives the immutable request and any phase bootstrap context.
+<autoloop-decisions-header version="1" block_seq="2" owner="implementer" phase_id="codex-resume-fallback" pair="implement" turn_seq="1" run_id="run-20260327T113458Z-91a8aeee" ts="2026-03-27T11:38:07.864430+00:00" />
+Reuse the existing session_recovery raw-log entry type for stale Codex resume fallback, but include the failed resume mode, stale thread id, warning text, and original raw CLI output before retrying.
+Clear the stale Codex session id and provider metadata in the phase session file before rebuilding the prompt so the retry goes through the normal fresh-thread bootstrap path and persists the replacement thread id on success.
+<autoloop-decisions-header version="1" block_seq="3" owner="test_author" phase_id="codex-resume-fallback" pair="test" turn_seq="1" run_id="run-20260327T113458Z-91a8aeee" ts="2026-03-27T11:41:56.690761+00:00" />
+Cover the retry-failure branch of the new Codex resume recovery separately so tests prove the fallback logs `session_recovery` first but still emits the existing fatal `provider_failure` path if the fresh-thread retry also fails.
