@@ -1,0 +1,4 @@
+# Plan ↔ Plan Verifier Feedback
+
+- Added a single-phase implementation plan centered on central commit-helper filtering, because the code surface is mostly `src/autoloop/main.py` plus tests and the main regression risk is missing one of the existing git commit flows.
+- PLAN-001 non-blocking: The narrative coverage list in `plan.md` names producer commits plus verifier completion/blocked/failure commits, but it does not call out the intermediate verifier-feedback/incomplete commit by name even though the request explicitly mentions verifier delta commits. The central-helper strategy still makes the plan feasible, so this is not blocking, but the implementer should treat verifier feedback commits as part of the same centralized filtering path rather than inferring that only terminal verifier outcomes changed.

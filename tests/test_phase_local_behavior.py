@@ -19,7 +19,9 @@ from autoloop.main import (
     ensure_phase_artifacts,
     ensure_workspace,
     extract_clarifications,
+    filter_commit_eligible_paths,
     filter_volatile_task_run_paths,
+    is_path_under_task_root,
     next_decisions_block_seq,
     next_decisions_qa_seq,
     next_decisions_turn_seq,
@@ -413,13 +415,9 @@ def test_verifier_scope_phase_local_allows_active_phase_only():
     ]
 
 
-def test_tracked_autoloop_paths_for_test_pair_excludes_runs_and_keeps_shared_artifacts():
+def test_tracked_autoloop_paths_for_test_pair_returns_active_task_root():
     tracked = tracked_autoloop_paths(".autoloop/tasks/task", "test")
-
-    assert ".autoloop/tasks/task/decisions.txt" in tracked
-    assert ".autoloop/tasks/task/test/" in tracked
-    assert ".autoloop/tasks/task/runs/" not in tracked
-    assert not any(path.endswith("run_log.md") or path.endswith("summary.md") for path in tracked)
+    assert tracked == [".autoloop/tasks/task/"]
 
 
 def test_filter_volatile_task_run_paths_keeps_non_run_phase_artifacts():
@@ -435,6 +433,25 @@ def test_filter_volatile_task_run_paths_keeps_non_run_phase_artifacts():
         ".autoloop/tasks/task/implement/phases/phase-a/implementation_notes.md",
         ".autoloop/tasks/task/test/phases/phase-a/test_strategy.md",
     }
+
+
+def test_is_path_under_task_root_matches_root_and_descendants_only():
+    task_root = ".autoloop/tasks/task"
+
+    assert is_path_under_task_root(task_root, task_root) is True
+    assert is_path_under_task_root(".autoloop/tasks/task/runs/run-1/events.jsonl", task_root) is True
+    assert is_path_under_task_root(".autoloop/tasks/task-other/raw_phase_log.md", task_root) is False
+
+
+def test_filter_commit_eligible_paths_respects_track_toggle():
+    paths = [
+        ".autoloop/tasks/task",
+        ".autoloop/tasks/task/runs/run-1/events.jsonl",
+        "src/feature.py",
+    ]
+
+    assert filter_commit_eligible_paths(paths, ".autoloop/tasks/task", True) == sorted(paths)
+    assert filter_commit_eligible_paths(paths, ".autoloop/tasks/task", False) == ["src/feature.py"]
 
 
 def test_remove_trailing_empty_decisions_block_truncates_utf8_safely(tmp_path: Path):

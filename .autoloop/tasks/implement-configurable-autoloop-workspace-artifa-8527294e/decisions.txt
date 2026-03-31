@@ -1,0 +1,6 @@
+<autoloop-decisions-header version="1" block_seq="1" owner="planner" phase_id="task-global" pair="plan" turn_seq="1" run_id="run-20260331T013230Z-17a2f358" ts="2026-03-31T01:32:30.259269+00:00" />
+Classify autoloop workspace artifacts only from the resolved active task_root_rel; do not special-case .autoloop, .superloop, or specific filenames.
+Keep filter_volatile_task_run_paths and verifier raw-delta scope inputs unchanged; apply track_autoloop_artifacts only when deciding staging and commit eligibility.
+Cover once-per-run-per-root ignore warnings with a shared in-memory warning cache in the commit helper layer so all commit flows inherit the same suppression behavior.
+<autoloop-decisions-header version="1" block_seq="2" owner="implementer" phase_id="workspace-artifact-tracking" pair="implement" turn_seq="1" run_id="run-20260331T013230Z-17a2f358" ts="2026-03-31T01:35:42.148596+00:00" />
+Make tracked_autoloop_paths resolve to the active task root prefix itself so baseline, pre-cycle, failure, completion, and final artifact commits all inherit the same full-root coverage and the same commit-time opt-out filter.

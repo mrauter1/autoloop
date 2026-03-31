@@ -132,6 +132,7 @@ def test_resolve_runtime_config_uses_builtins_when_no_config_and_yaml_missing(tm
         intent_mode="preserve",
         full_auto_answers=False,
         no_git=False,
+        track_autoloop_artifacts=True,
     )
 
 
@@ -140,6 +141,8 @@ def test_build_arg_parser_exposes_explicit_git_flag_pair():
     help_text = parser.format_help()
 
     assert "[--git | --no-git]" in help_text
+    assert "--track-autoloop-artifacts" in help_text
+    assert "--no-track-autoloop-artifacts" in help_text
     assert "multi-provider repository orchestration" in help_text
     assert "--git" in help_text
     assert "--no-git" in help_text
@@ -149,6 +152,9 @@ def test_build_arg_parser_exposes_explicit_git_flag_pair():
     assert parser.parse_args([]).no_git is None
     assert parser.parse_args(["--git"]).no_git is False
     assert parser.parse_args(["--no-git"]).no_git is True
+    assert parser.parse_args([]).track_autoloop_artifacts is None
+    assert parser.parse_args(["--track-autoloop-artifacts"]).track_autoloop_artifacts is True
+    assert parser.parse_args(["--no-track-autoloop-artifacts"]).track_autoloop_artifacts is False
     with pytest.raises(SystemExit):
         parser.parse_args(["--no-no-git"])
 
@@ -165,12 +171,20 @@ def test_resolve_runtime_config_applies_global_local_and_cli_precedence(tmp_path
         global_root / "autoloop.yaml",
         {
             "provider": {"model": "gpt-global", "model_effort": "medium"},
-            "runtime": {"max_iterations": 9, "phase_mode": "up-to", "no_git": True},
+            "runtime": {
+                "max_iterations": 9,
+                "phase_mode": "up-to",
+                "no_git": True,
+                "track_autoloop_artifacts": False,
+            },
         },
     )
     write_autoloop_config(
         workspace_root / "autoloop.config",
-        {"provider": {"model": "gpt-local"}, "runtime": {"max_iterations": 3, "no_git": False}},
+        {
+            "provider": {"model": "gpt-local"},
+            "runtime": {"max_iterations": 3, "no_git": False, "track_autoloop_artifacts": True},
+        },
     )
 
     resolved = resolve_runtime_config(
@@ -185,10 +199,17 @@ def test_resolve_runtime_config_applies_global_local_and_cli_precedence(tmp_path
     assert resolved.runtime.max_iterations == 3
     assert resolved.runtime.phase_mode == "up-to"
     assert resolved.runtime.no_git is False
+    assert resolved.runtime.track_autoloop_artifacts is True
 
     cli_resolved = resolve_runtime_config(
         workspace_root,
-        argparse.Namespace(model="gpt-cli", model_effort="high", max_iterations=4, no_git=True),
+        argparse.Namespace(
+            model="gpt-cli",
+            model_effort="high",
+            max_iterations=4,
+            no_git=True,
+            track_autoloop_artifacts=False,
+        ),
     )
     assert cli_resolved.provider == ProviderConfig(
         name="codex",
@@ -197,17 +218,22 @@ def test_resolve_runtime_config_applies_global_local_and_cli_precedence(tmp_path
     )
     assert cli_resolved.runtime.max_iterations == 4
     assert cli_resolved.runtime.no_git is True
+    assert cli_resolved.runtime.track_autoloop_artifacts is False
 
     write_autoloop_config(
         workspace_root / "autoloop.config",
-        {"provider": {"model": "gpt-local"}, "runtime": {"max_iterations": 3, "no_git": True}},
+        {
+            "provider": {"model": "gpt-local"},
+            "runtime": {"max_iterations": 3, "no_git": True, "track_autoloop_artifacts": False},
+        },
     )
 
     cli_git_resolved = resolve_runtime_config(
         workspace_root,
-        argparse.Namespace(model=None, model_effort=None, no_git=False),
+        argparse.Namespace(model=None, model_effort=None, no_git=False, track_autoloop_artifacts=True),
     )
     assert cli_git_resolved.runtime.no_git is False
+    assert cli_git_resolved.runtime.track_autoloop_artifacts is True
 
 
 def test_resolve_runtime_config_supports_explicit_nested_provider_selection(tmp_path: Path, monkeypatch):
@@ -976,6 +1002,8 @@ def test_try_commit_tracked_changes_warns_and_returns_false_on_commit_failure(tm
         assert allow_fail is True
         if args[:2] == ["add", "--"]:
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        if args[:3] == ["status", "--porcelain", "--ignored"]:
+            return subprocess.CompletedProcess(["git", *args], 0, " M .autoloop/tasks/t/runs/run/events.jsonl\n", "")
         if args[:2] == ["status", "--porcelain"]:
             return subprocess.CompletedProcess(["git", *args], 0, " M .autoloop/tasks/t/runs/run/events.jsonl\n", "")
         if args[:2] == ["commit", "-m"]:
@@ -2313,11 +2341,9 @@ def test_run_provider_phase_fatals_when_codex_resume_recovery_retry_fails(tmp_pa
     assert "entry=provider_failure" in run_raw_text
 
 
-def test_tracked_autoloop_paths_excludes_runs_directory():
+def test_tracked_autoloop_paths_include_active_task_root_and_runs():
     tracked = autoloop.tracked_autoloop_paths(".autoloop/tasks/task-1", "implement")
-    assert ".autoloop/tasks/task-1/runs/" not in tracked
-    assert ".autoloop/tasks/task-1/decisions.txt" in tracked
-    assert ".autoloop/tasks/task-1/implement/" in tracked
+    assert tracked == [".autoloop/tasks/task-1/"]
 
 
 def test_execute_pair_cycles_excludes_run_outputs_from_snapshot_delta_commits(tmp_path: Path, monkeypatch):
@@ -2401,7 +2427,7 @@ def test_execute_pair_cycles_excludes_run_outputs_from_snapshot_delta_commits(tm
     monkeypatch.setattr(
         autoloop,
         "commit_paths",
-        lambda _root, message, paths: committed_paths.append((message, set(paths))) or True,
+        lambda _root, message, paths, git_commit_policy=None: committed_paths.append((message, set(paths))) or True,
     )
 
     status, code = execute_pair_cycles(
@@ -2518,7 +2544,7 @@ def test_execute_pair_cycles_excludes_run_outputs_from_blocked_commit(tmp_path: 
     monkeypatch.setattr(
         autoloop,
         "commit_paths",
-        lambda _root, message, paths: committed_paths.append((message, set(paths))) or True,
+        lambda _root, message, paths, git_commit_policy=None: committed_paths.append((message, set(paths))) or True,
     )
 
     status, code = execute_pair_cycles(
@@ -2649,7 +2675,7 @@ def test_execute_pair_cycles_failure_commit_uses_tracked_pair_paths_only(tmp_pat
     monkeypatch.setattr(
         autoloop,
         "commit_paths",
-        lambda _root, message, paths: committed_paths.append((message, set(paths))) or True,
+        lambda _root, message, paths, git_commit_policy=None: committed_paths.append((message, set(paths))) or True,
     )
     monkeypatch.setattr(autoloop.time, "sleep", lambda _seconds: None)
 
@@ -2687,6 +2713,123 @@ def test_execute_pair_cycles_failure_commit_uses_tracked_pair_paths_only(tmp_pat
         )
         for _message, paths in committed_paths
     )
+
+
+def test_execute_pair_cycles_disabled_artifact_tracking_preserves_scope_warning_on_raw_delta(tmp_path: Path, monkeypatch):
+    paths = ensure_workspace(tmp_path, "task-1", "Implement feature X", "replace")
+    run_paths = create_run_paths(paths["runs_dir"], "run-1", "Implement feature X")
+    recorder = EventRecorder(run_id="run-1", events_file=run_paths["events_file"])
+
+    phase_dir = paths["task_dir"] / "implement" / "phases" / "phase-1"
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    criteria_file = phase_dir / "criteria.md"
+    feedback_file = phase_dir / "feedback.md"
+    criteria_file.write_text("- [x] done\n", encoding="utf-8")
+    feedback_file.write_text("# feedback\n", encoding="utf-8")
+
+    selection = autoloop.ResolvedPhaseSelection(
+        phase_mode="single",
+        phase_ids=("phase-1",),
+        phases=(
+            autoloop.PhasePlanPhase(
+                phase_id="phase-1",
+                title="Phase 1",
+                objective="Deliver phase 1",
+                in_scope=("code path A",),
+                out_of_scope=(),
+                dependencies=(),
+                acceptance_criteria=(autoloop.PhasePlanCriterion(id="AC-1", text="done"),),
+                deliverables=("code",),
+                risks=(),
+                rollback=(),
+                status="planned",
+            ),
+        ),
+        explicit=True,
+    )
+    bundle = autoloop.ArtifactBundle(
+        pair="implement",
+        scope="phase-local",
+        artifact_dir=phase_dir,
+        criteria_file=criteria_file,
+        feedback_file=feedback_file,
+        artifact_files={"criteria.md": criteria_file, "feedback.md": feedback_file},
+        allowed_verifier_prefixes=(f"{paths['task_root_rel']}/implement/phases/phase-1/",),
+        phase_id="phase-1",
+        phase_dir_key="phase-1",
+        phase_title="Phase 1",
+    )
+
+    parse_results = [
+        autoloop.LoopControl(question=None, promise=None, source="canonical", raw_payload=None),
+        autoloop.LoopControl(question=None, promise=autoloop.PROMISE_INCOMPLETE, source="canonical", raw_payload=None),
+    ]
+    delta_by_snapshot = {
+        "producer": set(),
+        "verifier": {".autoloop/tasks/task-1/plan/plan.md"},
+    }
+    committed_paths: list[tuple[str, set[str]]] = []
+    warnings: list[str] = []
+    snapshots = iter(["producer", "verifier"])
+
+    monkeypatch.setattr(autoloop, "warn", lambda message: warnings.append(message))
+    monkeypatch.setattr(autoloop, "commit_tracked_changes", lambda *args, **kwargs: False)
+    monkeypatch.setattr(autoloop, "phase_snapshot_ref", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
+    monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: parse_results.pop(0))
+    monkeypatch.setattr(
+        autoloop,
+        "changed_paths_from_snapshot",
+        lambda _root, snapshot, tracked_paths=None: set(delta_by_snapshot[snapshot]),
+    )
+    monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: False)
+
+    def fake_commit_paths(_root, message, paths_to_commit, git_commit_policy=None):
+        filtered = set(paths_to_commit)
+        if git_commit_policy is not None:
+            filtered = set(
+                autoloop.filter_commit_eligible_paths(
+                    paths_to_commit,
+                    git_commit_policy.task_root_rel,
+                    git_commit_policy.track_autoloop_artifacts,
+                )
+            )
+        committed_paths.append((message, filtered))
+        return bool(filtered)
+
+    monkeypatch.setattr(autoloop, "commit_paths", fake_commit_paths)
+    monkeypatch.setattr(autoloop.time, "sleep", lambda _seconds: None)
+
+    status, code = execute_pair_cycles(
+        pair_cfg=PairConfig(name="implement", enabled=True, max_iterations=1),
+        pair="implement",
+        artifact_bundle=bundle,
+        session_file=run_paths["plan_session_file"],
+        root=tmp_path,
+        codex_command=fake_codex_command(),
+        run_id="run-1",
+        run_paths=run_paths,
+        paths=paths,
+        recorder=recorder,
+        task_root_rel=str(paths["task_root_rel"]),
+        use_git=True,
+        git_commit_policy=autoloop.GitCommitPolicy(
+            task_root_rel=str(paths["task_root_rel"]),
+            track_autoloop_artifacts=False,
+        ),
+        active_phase_selection=selection,
+        enabled_pairs=["implement"],
+        args=argparse.Namespace(full_auto_answers=False),
+        resume_checkpoint=None,
+        use_resume_state=False,
+    )
+
+    assert (status, code) == ("failed", 1)
+    assert any("outside recommended scope" in message for message in warnings)
+    assert committed_paths == [
+        ("autoloop: verifier feedback (implement #1)", set()),
+        ("autoloop: failed (implement max iterations)", set()),
+    ]
 
 
 def test_ensure_workspace_does_not_create_task_local_prompts_on_repeat_calls(tmp_path: Path):

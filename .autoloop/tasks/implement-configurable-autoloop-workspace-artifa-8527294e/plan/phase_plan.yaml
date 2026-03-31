@@ -1,0 +1,39 @@
+version: 1
+task_id: implement-configurable-autoloop-workspace-artifa-8527294e
+request_snapshot_ref: /workspace/autoloop/.autoloop/tasks/implement-configurable-autoloop-workspace-artifa-8527294e/runs/run-20260331T013230Z-17a2f358/request.md
+phases:
+  - phase_id: workspace-artifact-tracking
+    title: Configurable Workspace Artifact Tracking
+    objective: Add a runtime toggle that defaults to tracking the full active task workspace root, including runs artifacts, while limiting the new behavior change to commit eligibility and preserving raw delta and verifier scope semantics.
+    status: planned
+    in_scope:
+      - Add runtime config and CLI support for track_autoloop_artifacts with a default of true.
+      - Update tracked autoloop path helpers so the active task workspace root includes runs artifacts by default.
+      - Add task-root path classification and commit-eligibility filtering based only on task_root_rel.
+      - Apply the new filter and git-ignore warning behavior across all autoloop auto-stage and auto-commit flows.
+      - Expand tests for config resolution, default tracking, opt-out behavior, ignore semantics, raw delta preservation, and verifier scope preservation.
+    out_of_scope:
+      - Redesign producer or verifier delta computation.
+      - Change verifier scope policy or switch scope checks to filtered commit paths.
+      - Force-add ignored files, de-index tracked files, or change no-git behavior beyond config plumbing.
+    dependencies: []
+    acceptance_criteria:
+      - id: AC-1
+        text: Runtime config, config-file parsing, and CLI resolution expose track_autoloop_artifacts with a default of true and working --track-autoloop-artifacts / --no-track-autoloop-artifacts overrides.
+      - id: AC-2
+        text: Default git-enabled tracking includes eligible paths under the active task workspace root, including runs artifacts, and opt-out removes all task-root paths from auto-stage and auto-commit eligibility without affecting non-task-root paths.
+      - id: AC-3
+        text: Ignored untracked task-root paths are skipped with a once-per-run warning, ignored tracked task-root paths may still commit with the corresponding once-per-run warning, and empty eligible sets no-op cleanly.
+      - id: AC-4
+        text: Raw producer and verifier deltas plus verifier scope warnings remain unchanged by the toggle.
+    deliverables:
+      - Runtime config plumbing and centralized commit-eligibility filtering in src/autoloop/main.py.
+      - Updated tracked-path helper behavior that includes runs artifacts by default.
+      - Regression tests covering config, tracking defaults, opt-out behavior, ignore semantics, and delta/scope preservation.
+    risks:
+      - Commit filtering may miss a call site if not centralized.
+      - Ignore handling may accidentally convert skipped task-root files into fatal git errors.
+      - Tests may accidentally assert filtered commit behavior instead of raw delta behavior.
+    rollback:
+      - Revert the centralized commit-filtering and ignore-warning changes together with the runtime flag plumbing.
+      - Leave task workspace contents and existing git-tracked files untouched during rollback.
