@@ -8,6 +8,7 @@ contract, with canonical <loop-control> JSON output and legacy tag compatibility
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import html
 import json
@@ -472,6 +473,16 @@ def normalize_repo_path(path_text: str) -> str:
     cleaned = path_text.strip()
     if " -> " in cleaned:
         cleaned = cleaned.split(" -> ", 1)[1]
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] == '"':
+        try:
+            decoded = ast.literal_eval(cleaned)
+        except (SyntaxError, ValueError):
+            return cleaned[1:-1]
+        if isinstance(decoded, str):
+            try:
+                return decoded.encode("latin-1").decode("utf-8")
+            except UnicodeError:
+                return decoded
     return cleaned
 
 
@@ -789,6 +800,21 @@ def parse_status_paths(status_text: str) -> Set[str]:
 
 def parse_status_entries(status_text: str) -> List[Tuple[str, str]]:
     """Parses git porcelain status into (status, repo-relative path) entries."""
+    if "\0" in status_text:
+        entries: List[Tuple[str, str]] = []
+        records = status_text.split("\0")
+        idx = 0
+        while idx < len(records):
+            record = records[idx]
+            idx += 1
+            if len(record) < 4:
+                continue
+            status = record[:2]
+            entries.append((status, record[3:]))
+            if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
+                idx += 1
+        return entries
+
     entries: List[Tuple[str, str]] = []
     for line in status_text.splitlines():
         if len(line) < 4:
@@ -1205,7 +1231,7 @@ def changed_paths_from_snapshot(cwd: Path, snapshot: PhaseSnapshot, tracked_path
     return tracked_delta | new_untracked
 def changed_paths(cwd: Path, tracked_paths: Optional[Sequence[str]] = None) -> Set[str]:
     """Returns changed paths from git porcelain status, optionally restricted to tracked paths."""
-    args = ["status", "--porcelain"]
+    args = ["status", "--porcelain", "-z"]
     if tracked_paths:
         args.extend(["--", *tracked_paths])
     return parse_status_paths(run_git(args, cwd=cwd).stdout)
@@ -1273,6 +1299,10 @@ def is_path_under_task_root(path: str, task_root_rel: str) -> bool:
     """Returns whether a repo-relative path is equal to or nested under the active task root."""
     normalized_path = path.rstrip("/")
     normalized_root = task_root_rel.rstrip("/")
+    if normalized_root in {"", "."}:
+        return normalized_path == "." or (
+            bool(normalized_path) and normalized_path != ".." and not normalized_path.startswith("../")
+        )
     return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
 
 
@@ -1902,26 +1932,15 @@ def _warn_task_root_gitignore_once(git_commit_policy: Optional[GitCommitPolicy],
     warn(message)
 
 
-def _git_path_matches_ignore_rules(root: Path, path: str, *, allow_fail: bool) -> bool:
-    result = run_git(["check-ignore", "--no-index", "-q", "--", path], cwd=root, allow_fail=True)
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    if not allow_fail:
-        fatal(f"[!] FATAL GIT ERROR: check-ignore --no-index -q -- {path}\n{result.stderr.strip()}")
-    return False
-
-
-def _git_path_is_tracked(root: Path, path: str, *, allow_fail: bool) -> bool:
-    result = run_git(["ls-files", "--error-unmatch", "--", path], cwd=root, allow_fail=True)
-    if result.returncode == 0:
-        return True
-    if result.returncode == 1:
-        return False
-    if not allow_fail:
-        fatal(f"[!] FATAL GIT ERROR: ls-files --error-unmatch -- {path}\n{result.stderr.strip()}")
-    return False
+def _tracked_ignored_paths(root: Path, paths: Sequence[str], *, allow_fail: bool) -> Set[str]:
+    if not paths:
+        return set()
+    result = run_git(["ls-files", "-ci", "--exclude-standard", "-z", "--", *paths], cwd=root, allow_fail=True)
+    if result.returncode != 0:
+        if not allow_fail:
+            fatal(f"[!] FATAL GIT ERROR: ls-files -ci --exclude-standard -z -- {' '.join(paths)}\n{result.stderr.strip()}")
+        return set()
+    return {path for path in result.stdout.split("\0") if path}
 
 
 def _resolve_stageable_commit_paths(
@@ -1942,12 +1961,12 @@ def _resolve_stageable_commit_paths(
     if not unique_paths:
         return []
 
-    status_result = run_git(["status", "--porcelain", "--ignored", "--", *unique_paths], cwd=root, allow_fail=allow_fail)
+    status_result = run_git(["status", "--porcelain", "-z", "--ignored", "--", *unique_paths], cwd=root, allow_fail=allow_fail)
     if status_result.returncode != 0:
         if allow_fail:
             warn(f"{status_error_message}: {status_result.stderr.strip()}")
             return None
-        fatal(f"[!] FATAL GIT ERROR: status --porcelain --ignored -- {' '.join(unique_paths)}\n{status_result.stderr.strip()}")
+        fatal(f"[!] FATAL GIT ERROR: status --porcelain -z --ignored -- {' '.join(unique_paths)}\n{status_result.stderr.strip()}")
 
     status_entries = parse_status_entries(status_result.stdout)
     stageable_paths = sorted({path for status, path in status_entries if status != "!!" and path})
@@ -1972,15 +1991,8 @@ def _resolve_stageable_commit_paths(
             ),
         )
 
-    ignored_tracked_paths = sorted(
-        {
-            path
-            for path in stageable_paths
-            if is_path_under_task_root(path, task_root_rel)
-            and _git_path_matches_ignore_rules(root, path, allow_fail=allow_fail)
-            and _git_path_is_tracked(root, path, allow_fail=allow_fail)
-        }
-    )
+    task_root_stageable_paths = sorted(path for path in stageable_paths if is_path_under_task_root(path, task_root_rel))
+    ignored_tracked_paths = sorted(_tracked_ignored_paths(root, task_root_stageable_paths, allow_fail=allow_fail))
     if ignored_tracked_paths:
         _warn_task_root_gitignore_once(
             git_commit_policy,
@@ -2056,7 +2068,7 @@ def try_commit_tracked_changes(
         warn(f"Unable to stage final run artifacts for commit: {add_res.stderr.strip()}")
         return False
 
-    status_res = run_git(["status", "--porcelain", "--", *stageable_paths], cwd=root, allow_fail=True)
+    status_res = run_git(["status", "--porcelain", "-z", "--", *stageable_paths], cwd=root, allow_fail=True)
     if status_res.returncode != 0:
         warn(f"Unable to inspect final run artifact changes: {status_res.stderr.strip()}")
         return False

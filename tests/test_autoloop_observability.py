@@ -1002,9 +1002,9 @@ def test_try_commit_tracked_changes_warns_and_returns_false_on_commit_failure(tm
         assert allow_fail is True
         if args[:2] == ["add", "--"]:
             return subprocess.CompletedProcess(["git", *args], 0, "", "")
-        if args[:3] == ["status", "--porcelain", "--ignored"]:
+        if args[:4] == ["status", "--porcelain", "-z", "--ignored"]:
             return subprocess.CompletedProcess(["git", *args], 0, " M .autoloop/tasks/t/runs/run/events.jsonl\n", "")
-        if args[:2] == ["status", "--porcelain"]:
+        if args[:3] == ["status", "--porcelain", "-z"]:
             return subprocess.CompletedProcess(["git", *args], 0, " M .autoloop/tasks/t/runs/run/events.jsonl\n", "")
         if args[:2] == ["commit", "-m"]:
             return subprocess.CompletedProcess(["git", *args], 1, "", "hook rejected commit")

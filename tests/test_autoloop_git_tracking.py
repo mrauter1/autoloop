@@ -6,7 +6,14 @@ from pathlib import Path
 
 import autoloop.main as autoloop
 
-from autoloop.main import GitCommitPolicy, changed_paths_from_snapshot, commit_paths, phase_snapshot_ref
+from autoloop.main import (
+    GitCommitPolicy,
+    changed_paths,
+    changed_paths_from_snapshot,
+    commit_paths,
+    parse_status_entries,
+    phase_snapshot_ref,
+)
 
 
 def init_temp_git_repo() -> Path:
@@ -27,13 +34,13 @@ def commit_initial_file(root: Path, name: str = "tracked.txt", content: str = "i
 
 def last_commit_files(root: Path) -> set[str]:
     show = subprocess.run(
-        ["git", "show", "--name-only", "--pretty="],
+        ["git", "show", "--name-only", "--pretty=", "-z"],
         cwd=root,
         check=True,
         text=True,
         stdout=subprocess.PIPE,
-    ).stdout.splitlines()
-    return {line.strip() for line in show if line.strip()}
+    ).stdout.split("\0")
+    return {entry for entry in show if entry}
 
 
 def test_dirty_file_edited_again_is_in_snapshot_delta():
@@ -226,4 +233,69 @@ def test_commit_paths_warns_once_for_ignored_but_tracked_task_root_paths(monkeyp
             "Already-tracked Autoloop workspace paths under "
             f"`{task_root}` still match ignore rules. Git may continue auto-committing updates to those tracked paths until they are removed from the index."
         )
+    ]
+
+
+def test_commit_paths_stages_task_root_files_with_spaces_in_their_names():
+    root = init_temp_git_repo()
+    commit_initial_file(root)
+
+    task_root = ".autoloop/tasks/task-1"
+    artifact = root / task_root / "implement" / "phases" / "phase 1" / "notes with spaces.md"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("# notes\n", encoding="utf-8")
+
+    committed = commit_paths(
+        root,
+        "track-spaced-artifact",
+        [f"{task_root}/"],
+        git_commit_policy=GitCommitPolicy(task_root_rel=task_root),
+    )
+
+    assert committed is True
+    assert f"{task_root}/implement/phases/phase 1/notes with spaces.md" in last_commit_files(root)
+
+
+def test_changed_paths_and_commit_paths_use_rename_destination_paths():
+    root = init_temp_git_repo()
+    commit_initial_file(root)
+
+    task_root = ".autoloop/tasks/task-1"
+    original = root / task_root / "old name.txt"
+    original.parent.mkdir(parents=True, exist_ok=True)
+    original.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", f"{task_root}/old name.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-m", "add-task-file"], cwd=root, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    subprocess.run(["git", "mv", f"{task_root}/old name.txt", f"{task_root}/new name.txt"], cwd=root, check=True)
+
+    delta = changed_paths(root, tracked_paths=[f"{task_root}/"])
+
+    assert f"{task_root}/new name.txt" in delta
+    assert f"{task_root}/old name.txt" not in delta
+
+    committed = commit_paths(
+        root,
+        "rename-task-file",
+        [f"{task_root}/"],
+        git_commit_policy=GitCommitPolicy(task_root_rel=task_root),
+    )
+
+    assert committed is True
+    assert f"{task_root}/new name.txt" in last_commit_files(root)
+
+
+def test_parse_status_entries_handles_nul_delimited_rename_copy_and_embedded_newlines():
+    status_text = (
+        "R  .autoloop/tasks/task-1/new name.txt\0"
+        ".autoloop/tasks/task-1/old name.txt\0"
+        "C  .autoloop/tasks/task-1/copied notes.txt\0"
+        ".autoloop/tasks/task-1/source notes.txt\0"
+        "?? .autoloop/tasks/task-1/notes\nwith newline.md\0"
+    )
+
+    assert parse_status_entries(status_text) == [
+        ("R ", ".autoloop/tasks/task-1/new name.txt"),
+        ("C ", ".autoloop/tasks/task-1/copied notes.txt"),
+        ("??", ".autoloop/tasks/task-1/notes\nwith newline.md"),
     ]

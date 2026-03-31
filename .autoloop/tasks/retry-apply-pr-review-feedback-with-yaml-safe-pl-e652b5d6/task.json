@@ -1,0 +1,36 @@
+{
+  "task_id": "retry-apply-pr-review-feedback-with-yaml-safe-pl-e652b5d6",
+  "created_at": "2026-03-31T02:49:12.869728+00:00",
+  "request_text": "# Retry: apply PR review feedback with YAML-safe planning artifacts\n\nThe previous run failed because generated `phase_plan.yaml` included YAML-invalid backtick content in a plain scalar. Re-run this task and ensure planning artifacts are YAML-parseable.\n\n## Main task\n\nAnalyze and apply review suggestions for the `track_autoloop_artifacts` feature:\n- improve ignore/tracked detection performance in staging logic\n- harden porcelain path parsing (quoted/special filenames)\n- handle `is_path_under_task_root(path, \".\")` robustly\n- preserve delta/scope invariants\n- add/update tests accordingly\n\n## Important planning artifact constraint\n\nWhen generating `phase_plan.yaml` criteria text, avoid unescaped backticks or any YAML-breaking characters in plain scalars. Use YAML-safe quoted strings where needed.\n\n## Execution mode\n\nRun full workflow with pairs: plan, implement, test.",
+  "request_updated_at": "2026-03-31T02:49:12.869788+00:00",
+  "phase_plan_path": "/workspace/autoloop/.autoloop/tasks/retry-apply-pr-review-feedback-with-yaml-safe-pl-e652b5d6/plan/phase_plan.yaml",
+  "phase_plan_version": 1,
+  "active_phase_selection": {
+    "run_id": "run-20260331T024912Z-6e51a780",
+    "mode": "single",
+    "phase_ids": [
+      "harden-track-autoloop-artifact-git-paths"
+    ],
+    "explicit": true,
+    "current_phase_index": 1,
+    "current_phase_id": null
+  },
+  "phase_status": {
+    "harden-track-autoloop-artifact-git-paths": "completed"
+  },
+  "phase_history": [
+    {
+      "phase_id": "harden-track-autoloop-artifact-git-paths",
+      "run_id": "run-20260331T024912Z-6e51a780",
+      "status": "in_progress",
+      "ts": "2026-03-31T02:51:43.251097+00:00"
+    },
+    {
+      "phase_id": "harden-track-autoloop-artifact-git-paths",
+      "run_id": "run-20260331T024912Z-6e51a780",
+      "status": "completed",
+      "ts": "2026-03-31T02:58:59.584629+00:00",
+      "pair": "test"
+    }
+  ]
+}

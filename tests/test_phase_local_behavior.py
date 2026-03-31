@@ -443,6 +443,28 @@ def test_is_path_under_task_root_matches_root_and_descendants_only():
     assert is_path_under_task_root(".autoloop/tasks/task-other/raw_phase_log.md", task_root) is False
 
 
+def test_is_path_under_task_root_treats_repo_root_as_in_scope():
+    assert is_path_under_task_root(".", ".") is True
+    assert is_path_under_task_root("src/feature.py", ".") is True
+    assert is_path_under_task_root(".autoloop/tasks/task/raw_phase_log.md", ".") is True
+    assert is_path_under_task_root("../outside.txt", ".") is False
+
+
+def test_is_path_under_task_root_preserves_primary_and_legacy_state_roots():
+    assert is_path_under_task_root(
+        ".autoloop/tasks/task/runs/run-1/events.jsonl",
+        ".autoloop/tasks/task",
+    ) is True
+    assert is_path_under_task_root(
+        ".superloop/tasks/task/runs/run-1/events.jsonl",
+        ".superloop/tasks/task",
+    ) is True
+    assert is_path_under_task_root(
+        ".superloop/tasks/task-other/runs/run-1/events.jsonl",
+        ".superloop/tasks/task",
+    ) is False
+
+
 def test_filter_commit_eligible_paths_respects_track_toggle():
     paths = [
         ".autoloop/tasks/task",
