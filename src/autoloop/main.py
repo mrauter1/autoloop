@@ -8,6 +8,7 @@ contract, with canonical <loop-control> JSON output and legacy tag compatibility
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import html
 import json
@@ -101,6 +102,7 @@ DEFAULT_PHASE_MODE = PHASE_MODE_SINGLE
 DEFAULT_INTENT_MODE = "preserve"
 DEFAULT_FULL_AUTO_ANSWERS = False
 DEFAULT_NO_GIT = False
+DEFAULT_TRACK_AUTOLOOP_ARTIFACTS = True
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATE_DIRNAME = ".autoloop"
 LEGACY_STATE_DIRNAME = ".superloop"
@@ -223,6 +225,7 @@ class RuntimeConfig:
     intent_mode: str
     full_auto_answers: bool
     no_git: bool
+    track_autoloop_artifacts: bool
 
 
 @dataclass(frozen=True)
@@ -233,6 +236,7 @@ class RuntimeConfigOverride:
     intent_mode: Optional[str] = None
     full_auto_answers: Optional[bool] = None
     no_git: Optional[bool] = None
+    track_autoloop_artifacts: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -289,6 +293,13 @@ class ProviderRuntime:
     codex_command: Optional[CodexCommandConfig] = None
     codex: Optional[CodexProviderConfig] = None
     claude: Optional[ClaudeProviderConfig] = None
+
+
+@dataclass
+class GitCommitPolicy:
+    task_root_rel: str
+    track_autoloop_artifacts: bool = DEFAULT_TRACK_AUTOLOOP_ARTIFACTS
+    warning_cache: Set[Tuple[str, str]] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -462,6 +473,16 @@ def normalize_repo_path(path_text: str) -> str:
     cleaned = path_text.strip()
     if " -> " in cleaned:
         cleaned = cleaned.split(" -> ", 1)[1]
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] == '"':
+        try:
+            decoded = ast.literal_eval(cleaned)
+        except (SyntaxError, ValueError):
+            return cleaned[1:-1]
+        if isinstance(decoded, str):
+            try:
+                return decoded.encode("latin-1").decode("utf-8")
+            except UnicodeError:
+                return decoded
     return cleaned
 
 
@@ -774,12 +795,32 @@ def resolve_session_file(pair: str, active_phase_selection: Optional[ResolvedPha
 
 def parse_status_paths(status_text: str) -> Set[str]:
     """Parses git porcelain status into a set of changed repo-relative paths."""
-    changed: Set[str] = set()
+    return {path for _status, path in parse_status_entries(status_text)}
+
+
+def parse_status_entries(status_text: str) -> List[Tuple[str, str]]:
+    """Parses git porcelain status into (status, repo-relative path) entries."""
+    if "\0" in status_text:
+        entries: List[Tuple[str, str]] = []
+        records = status_text.split("\0")
+        idx = 0
+        while idx < len(records):
+            record = records[idx]
+            idx += 1
+            if len(record) < 4:
+                continue
+            status = record[:2]
+            entries.append((status, record[3:]))
+            if status[0] in {"R", "C"} or status[1] in {"R", "C"}:
+                idx += 1
+        return entries
+
+    entries: List[Tuple[str, str]] = []
     for line in status_text.splitlines():
         if len(line) < 4:
             continue
-        changed.add(normalize_repo_path(line[3:]))
-    return changed
+        entries.append((line[:2], normalize_repo_path(line[3:])))
+    return entries
 
 
 def package_root() -> Path:
@@ -973,7 +1014,16 @@ def parse_autoloop_config(payload: object, source: Path) -> AutoloopConfigOverri
     unknown_runtime_keys = [
         key
         for key in runtime_payload
-        if key not in {"pairs", "max_iterations", "phase_mode", "intent_mode", "full_auto_answers", "no_git"}
+        if key
+        not in {
+            "pairs",
+            "max_iterations",
+            "phase_mode",
+            "intent_mode",
+            "full_auto_answers",
+            "no_git",
+            "track_autoloop_artifacts",
+        }
     ]
     if unknown_runtime_keys:
         raise ConfigError(f"{source}: unsupported runtime keys: {_format_unknown_keys(unknown_runtime_keys)}")
@@ -990,6 +1040,11 @@ def parse_autoloop_config(payload: object, source: Path) -> AutoloopConfigOverri
         intent_mode=intent_mode,
         full_auto_answers=_optional_config_bool(runtime_payload.get("full_auto_answers"), "runtime.full_auto_answers", source),
         no_git=_optional_config_bool(runtime_payload.get("no_git"), "runtime.no_git", source),
+        track_autoloop_artifacts=_optional_config_bool(
+            runtime_payload.get("track_autoloop_artifacts"),
+            "runtime.track_autoloop_artifacts",
+            source,
+        ),
     )
 
     return AutoloopConfigOverride(
@@ -1062,6 +1117,7 @@ def _merge_runtime_config(*layers: RuntimeConfigOverride, args: argparse.Namespa
     intent_mode = DEFAULT_INTENT_MODE
     full_auto_answers = DEFAULT_FULL_AUTO_ANSWERS
     no_git = DEFAULT_NO_GIT
+    track_autoloop_artifacts = DEFAULT_TRACK_AUTOLOOP_ARTIFACTS
 
     for layer in layers:
         if layer.pairs is not None:
@@ -1076,6 +1132,8 @@ def _merge_runtime_config(*layers: RuntimeConfigOverride, args: argparse.Namespa
             full_auto_answers = layer.full_auto_answers
         if layer.no_git is not None:
             no_git = layer.no_git
+        if layer.track_autoloop_artifacts is not None:
+            track_autoloop_artifacts = layer.track_autoloop_artifacts
 
     if getattr(args, "pairs", None) is not None:
         pairs = args.pairs
@@ -1089,6 +1147,8 @@ def _merge_runtime_config(*layers: RuntimeConfigOverride, args: argparse.Namespa
         full_auto_answers = args.full_auto_answers
     if getattr(args, "no_git", None) is not None:
         no_git = args.no_git
+    if getattr(args, "track_autoloop_artifacts", None) is not None:
+        track_autoloop_artifacts = args.track_autoloop_artifacts
 
     if max_iterations < 1:
         raise ConfigError("runtime.max_iterations must be >= 1.")
@@ -1100,6 +1160,7 @@ def _merge_runtime_config(*layers: RuntimeConfigOverride, args: argparse.Namespa
         intent_mode=intent_mode,
         full_auto_answers=full_auto_answers,
         no_git=no_git,
+        track_autoloop_artifacts=track_autoloop_artifacts,
     )
 
 
@@ -1170,7 +1231,7 @@ def changed_paths_from_snapshot(cwd: Path, snapshot: PhaseSnapshot, tracked_path
     return tracked_delta | new_untracked
 def changed_paths(cwd: Path, tracked_paths: Optional[Sequence[str]] = None) -> Set[str]:
     """Returns changed paths from git porcelain status, optionally restricted to tracked paths."""
-    args = ["status", "--porcelain"]
+    args = ["status", "--porcelain", "-z"]
     if tracked_paths:
         args.extend(["--", *tracked_paths])
     return parse_status_paths(run_git(args, cwd=cwd).stdout)
@@ -1184,11 +1245,7 @@ def allowed_verifier_paths(bundle: ArtifactBundle, task_root: str) -> List[str]:
 
 def tracked_autoloop_artifact_paths(task_root: str) -> List[str]:
     """Returns repo-relative task-scoped artifacts that Autoloop tracks and may stage."""
-    return [
-        f"{task_root}/task.json",
-        f"{task_root}/raw_phase_log.md",
-        f"{task_root}/decisions.txt",
-    ]
+    return [f"{task_root}/"]
 
 
 def verifier_exempt_runtime_artifact_paths(task_root: str) -> List[str]:
@@ -1228,18 +1285,37 @@ def verifier_scope_violations(bundle: ArtifactBundle | str, verifier_delta: Set[
 
 def tracked_autoloop_paths(task_root: str, pair: Optional[str] = None) -> List[str]:
     """Returns paths that Autoloop may stage/commit."""
-    shared_paths = tracked_autoloop_artifact_paths(task_root)
-    if pair is None:
-        pair_paths = [f"{task_root}/{name}/" for name in PAIR_ORDER]
-    else:
-        pair_paths = [f"{task_root}/{pair}/"]
-    return [*shared_paths, *pair_paths]
+    del pair
+    return tracked_autoloop_artifact_paths(task_root)
 
 
 def filter_volatile_task_run_paths(paths: Iterable[str], task_root: str) -> Set[str]:
     """Drops volatile per-run task outputs from arbitrary path sets."""
     run_prefix = f"{task_root}/runs/"
     return {path for path in paths if path and not path.startswith(run_prefix)}
+
+
+def is_path_under_task_root(path: str, task_root_rel: str) -> bool:
+    """Returns whether a repo-relative path is equal to or nested under the active task root."""
+    normalized_path = path.rstrip("/")
+    normalized_root = task_root_rel.rstrip("/")
+    if normalized_root in {"", "."}:
+        return normalized_path == "." or (
+            bool(normalized_path) and normalized_path != ".." and not normalized_path.startswith("../")
+        )
+    return normalized_path == normalized_root or normalized_path.startswith(f"{normalized_root}/")
+
+
+def filter_commit_eligible_paths(
+    paths: Iterable[str],
+    task_root_rel: str,
+    track_autoloop_artifacts: bool,
+) -> List[str]:
+    """Filters candidate commit paths based on the active task-root tracking policy."""
+    unique_paths = sorted({path for path in paths if path})
+    if track_autoloop_artifacts:
+        return unique_paths
+    return [path for path in unique_paths if not is_path_under_task_root(path, task_root_rel)]
 
 
 def _phase_criteria_payload(
@@ -1845,39 +1921,154 @@ def repo_relative_path(root: Path, absolute_or_relative: Path) -> str:
         return str(absolute_or_relative)
 
 
-def commit_paths(root: Path, message: str, paths: Iterable[str]) -> bool:
-    """Stages and commits only the provided repo-relative paths when changed."""
-    unique_paths = sorted({p for p in paths if p})
+def _warn_task_root_gitignore_once(git_commit_policy: Optional[GitCommitPolicy], kind: str, message: str) -> None:
+    if git_commit_policy is None:
+        warn(message)
+        return
+    warning_key = (git_commit_policy.task_root_rel, kind)
+    if warning_key in git_commit_policy.warning_cache:
+        return
+    git_commit_policy.warning_cache.add(warning_key)
+    warn(message)
+
+
+def _tracked_ignored_paths(root: Path, paths: Sequence[str], *, allow_fail: bool) -> Set[str]:
+    if not paths:
+        return set()
+    result = run_git(["ls-files", "-ci", "--exclude-standard", "-z", "--", *paths], cwd=root, allow_fail=True)
+    if result.returncode != 0:
+        if not allow_fail:
+            fatal(f"[!] FATAL GIT ERROR: ls-files -ci --exclude-standard -z -- {' '.join(paths)}\n{result.stderr.strip()}")
+        return set()
+    return {path for path in result.stdout.split("\0") if path}
+
+
+def _resolve_stageable_commit_paths(
+    root: Path,
+    paths: Iterable[str],
+    *,
+    git_commit_policy: Optional[GitCommitPolicy],
+    allow_fail: bool,
+    status_error_message: str,
+) -> Optional[List[str]]:
+    unique_paths = sorted({path for path in paths if path})
+    if git_commit_policy is not None:
+        unique_paths = filter_commit_eligible_paths(
+            unique_paths,
+            git_commit_policy.task_root_rel,
+            git_commit_policy.track_autoloop_artifacts,
+        )
     if not unique_paths:
+        return []
+
+    status_result = run_git(["status", "--porcelain", "-z", "--ignored", "--", *unique_paths], cwd=root, allow_fail=allow_fail)
+    if status_result.returncode != 0:
+        if allow_fail:
+            warn(f"{status_error_message}: {status_result.stderr.strip()}")
+            return None
+        fatal(f"[!] FATAL GIT ERROR: status --porcelain -z --ignored -- {' '.join(unique_paths)}\n{status_result.stderr.strip()}")
+
+    status_entries = parse_status_entries(status_result.stdout)
+    stageable_paths = sorted({path for status, path in status_entries if status != "!!" and path})
+    if git_commit_policy is None:
+        return stageable_paths
+
+    task_root_rel = git_commit_policy.task_root_rel
+    ignored_untracked_paths = sorted(
+        {
+            path
+            for status, path in status_entries
+            if status == "!!" and path and is_path_under_task_root(path, task_root_rel)
+        }
+    )
+    if ignored_untracked_paths:
+        _warn_task_root_gitignore_once(
+            git_commit_policy,
+            "ignored_untracked",
+            (
+                f"Ignored untracked Autoloop workspace paths under `{task_root_rel}` were skipped during auto-stage. "
+                "Remove the ignore rule or track those paths manually if they should be committed."
+            ),
+        )
+
+    task_root_stageable_paths = sorted(path for path in stageable_paths if is_path_under_task_root(path, task_root_rel))
+    ignored_tracked_paths = sorted(_tracked_ignored_paths(root, task_root_stageable_paths, allow_fail=allow_fail))
+    if ignored_tracked_paths:
+        _warn_task_root_gitignore_once(
+            git_commit_policy,
+            "ignored_tracked",
+            (
+                f"Already-tracked Autoloop workspace paths under `{task_root_rel}` still match ignore rules. "
+                "Git may continue auto-committing updates to those tracked paths until they are removed from the index."
+            ),
+        )
+
+    return stageable_paths
+
+
+def commit_paths(
+    root: Path,
+    message: str,
+    paths: Iterable[str],
+    *,
+    git_commit_policy: Optional[GitCommitPolicy] = None,
+) -> bool:
+    """Stages and commits only the provided repo-relative paths when changed."""
+    stageable_paths = _resolve_stageable_commit_paths(
+        root,
+        paths,
+        git_commit_policy=git_commit_policy,
+        allow_fail=False,
+        status_error_message="Unable to inspect commit candidates",
+    )
+    if not stageable_paths:
         return False
 
-    run_git(["add", "--", *unique_paths], cwd=root)
-    if not changed_paths(root, tracked_paths=unique_paths):
+    run_git(["add", "--", *stageable_paths], cwd=root)
+    if not changed_paths(root, tracked_paths=stageable_paths):
         return False
 
     run_git(["commit", "-m", message], cwd=root)
     return True
 
 
-def commit_tracked_changes(root: Path, message: str, tracked_paths: Optional[Sequence[str]] = None) -> bool:
+def commit_tracked_changes(
+    root: Path,
+    message: str,
+    tracked_paths: Optional[Sequence[str]] = None,
+    *,
+    git_commit_policy: Optional[GitCommitPolicy] = None,
+) -> bool:
     tracked = list(tracked_paths) if tracked_paths else []
     if not tracked:
         return False
-    return commit_paths(root, message, tracked)
+    return commit_paths(root, message, tracked, git_commit_policy=git_commit_policy)
 
 
-def try_commit_tracked_changes(root: Path, message: str, tracked_paths: Optional[Sequence[str]] = None) -> bool:
+def try_commit_tracked_changes(
+    root: Path,
+    message: str,
+    tracked_paths: Optional[Sequence[str]] = None,
+    *,
+    git_commit_policy: Optional[GitCommitPolicy] = None,
+) -> bool:
     """Best-effort commit helper that never exits the process on git errors."""
-    tracked = sorted({p for p in (tracked_paths or []) if p})
-    if not tracked:
+    stageable_paths = _resolve_stageable_commit_paths(
+        root,
+        tracked_paths or (),
+        git_commit_policy=git_commit_policy,
+        allow_fail=True,
+        status_error_message="Unable to inspect final run artifact changes",
+    )
+    if not stageable_paths:
         return False
 
-    add_res = run_git(["add", "--", *tracked], cwd=root, allow_fail=True)
+    add_res = run_git(["add", "--", *stageable_paths], cwd=root, allow_fail=True)
     if add_res.returncode != 0:
         warn(f"Unable to stage final run artifacts for commit: {add_res.stderr.strip()}")
         return False
 
-    status_res = run_git(["status", "--porcelain", "--", *tracked], cwd=root, allow_fail=True)
+    status_res = run_git(["status", "--porcelain", "-z", "--", *stageable_paths], cwd=root, allow_fail=True)
     if status_res.returncode != 0:
         warn(f"Unable to inspect final run artifact changes: {status_res.stderr.strip()}")
         return False
@@ -3885,6 +4076,7 @@ def execute_pair_cycles(
     args: argparse.Namespace,
     resume_checkpoint: Optional[ResumeCheckpoint],
     use_resume_state: bool,
+    git_commit_policy: Optional[GitCommitPolicy] = None,
     prior_phase_ids: Sequence[str] = (),
     prior_phase_keys: Sequence[str] = (),
 ) -> Tuple[str, int]:
@@ -3933,7 +4125,12 @@ def execute_pair_cycles(
         )
         pair_tracked = tracked_autoloop_paths(task_root_rel, pair)
         if use_git:
-            commit_tracked_changes(root, f"autoloop: pre-cycle snapshot ({pair} #{cycle_num})", pair_tracked)
+            commit_tracked_changes(
+                root,
+                f"autoloop: pre-cycle snapshot ({pair} #{cycle_num})",
+                pair_tracked,
+                git_commit_policy=git_commit_policy,
+            )
 
         producer_turn_seq = next_decisions_turn_seq(
             paths["decisions_file"],
@@ -4079,7 +4276,12 @@ def execute_pair_cycles(
                 turn_seq=producer_turn_seq,
             )
             if use_git:
-                commit_tracked_changes(root, f"autoloop: answered producer question ({pair} #{cycle_num})", pair_tracked)
+                commit_tracked_changes(
+                    root,
+                    f"autoloop: answered producer question ({pair} #{cycle_num})",
+                    pair_tracked,
+                    git_commit_policy=git_commit_policy,
+                )
             continue
 
         if producer_decision.action == "ignore_promise":
@@ -4088,7 +4290,12 @@ def execute_pair_cycles(
             )
 
         if use_git and producer_delta:
-            commit_paths(root, f"autoloop: producer edits ({pair} #{cycle_num})", producer_delta)
+            commit_paths(
+                root,
+                f"autoloop: producer edits ({pair} #{cycle_num})",
+                producer_delta,
+                git_commit_policy=git_commit_policy,
+            )
         else:
             if use_git:
                 print("[-] Producer made no changes.")
@@ -4208,7 +4415,12 @@ def execute_pair_cycles(
                 answer_source,
             )
             if use_git:
-                commit_tracked_changes(root, f"autoloop: answered verifier question ({pair} #{cycle_num})", pair_tracked)
+                commit_tracked_changes(
+                    root,
+                    f"autoloop: answered verifier question ({pair} #{cycle_num})",
+                    pair_tracked,
+                    git_commit_policy=git_commit_policy,
+                )
             continue
 
         violations = verifier_scope_violations(artifact_bundle, verifier_delta, task_root_rel) if use_git else []
@@ -4243,18 +4455,33 @@ def execute_pair_cycles(
                 phase_id=active_phase_selection.phase_ids[0] if active_phase_selection else None,
             )
             if use_git:
-                commit_paths(root, f"autoloop: pair complete ({pair})", set(pair_tracked) | verifier_delta)
+                commit_paths(
+                    root,
+                    f"autoloop: pair complete ({pair})",
+                    set(pair_tracked) | verifier_delta,
+                    git_commit_policy=git_commit_policy,
+                )
             return "complete", 0
 
         if verifier_decision.action == "blocked":
             recorder.emit("blocked", pair=pair, cycle=cycle_num, attempt=attempt_num)
             if use_git:
-                commit_paths(root, f"autoloop: blocked ({pair} #{cycle_num})", set(pair_tracked) | verifier_delta)
+                commit_paths(
+                    root,
+                    f"autoloop: blocked ({pair} #{cycle_num})",
+                    set(pair_tracked) | verifier_delta,
+                    git_commit_policy=git_commit_policy,
+                )
             print(f"[BLOCKED] Pair `{pair}` emitted BLOCKED.", file=sys.stderr)
             return "blocked", 2
 
         if use_git:
-            commit_paths(root, f"autoloop: verifier feedback ({pair} #{cycle_num})", verifier_delta)
+            commit_paths(
+                root,
+                f"autoloop: verifier feedback ({pair} #{cycle_num})",
+                verifier_delta,
+                git_commit_policy=git_commit_policy,
+            )
         else:
             print("[-] Change detection skipped in --no-git mode.")
         cycle += 1
@@ -4262,7 +4489,12 @@ def execute_pair_cycles(
 
     recorder.emit("pair_failed", pair=pair)
     if use_git:
-        commit_paths(root, f"autoloop: failed ({pair} max iterations)", pair_tracked)
+        commit_paths(
+            root,
+            f"autoloop: failed ({pair} max iterations)",
+            pair_tracked,
+            git_commit_policy=git_commit_policy,
+        )
     print(f"[FAILED] Pair `{pair}` reached max iterations without COMPLETE.", file=sys.stderr)
     return "failed", 1
 
@@ -4307,6 +4539,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Auto-answer agent questions using an extra turn from the active provider",
+    )
+    parser.add_argument(
+        "--track-autoloop-artifacts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Auto-stage and auto-commit active task workspace paths in git mode",
     )
     git_group = parser.add_mutually_exclusive_group()
     git_group.add_argument(
@@ -4365,6 +4603,7 @@ def main() -> int:
     run_id: Optional[str] = None
     run_paths: Optional[Dict[str, Path]] = None
     recorder: Optional[EventRecorder] = None
+    git_commit_policy: Optional[GitCommitPolicy] = None
     run_status = "setup"
     exit_code = 1
     try:
@@ -4377,6 +4616,7 @@ def main() -> int:
     args.intent_mode = runtime_config.runtime.intent_mode
     args.full_auto_answers = runtime_config.runtime.full_auto_answers
     args.no_git = runtime_config.runtime.no_git
+    args.track_autoloop_artifacts = runtime_config.runtime.track_autoloop_artifacts
     use_git = not args.no_git
     if use_git and not shutil.which("git"):
         warn("git is not installed; forcing --no-git mode.")
@@ -4404,6 +4644,10 @@ def main() -> int:
     paths = ensure_workspace(root, task_id, args.intent, args.intent_mode, state_dir=active_state_dir)
     enforce_phase_parser_preconditions(task_dir=paths["task_dir"], enabled_pairs=enabled_pairs)
     task_root_rel = str(paths["task_root_rel"])
+    git_commit_policy = GitCommitPolicy(
+        task_root_rel=task_root_rel,
+        track_autoloop_artifacts=args.track_autoloop_artifacts,
+    )
     task_scoped_paths = tracked_autoloop_paths(task_root_rel)
     resolved_request_text = task_request_text(paths["task_meta_file"], paths["legacy_context_file"])
     resume_checkpoint: Optional[ResumeCheckpoint] = None
@@ -4486,7 +4730,12 @@ def main() -> int:
     run_status = "running"
 
     if use_git and not args.resume:
-        commit_tracked_changes(root, "autoloop: baseline", task_scoped_paths)
+        commit_tracked_changes(
+            root,
+            "autoloop: baseline",
+            task_scoped_paths,
+            git_commit_policy=git_commit_policy,
+        )
 
     print("\n[+] Starting Autoloop")
     print(f"[*] Workspace root: {root}")
@@ -4578,6 +4827,7 @@ def main() -> int:
                 recorder=recorder,
                 task_root_rel=task_root_rel,
                 use_git=use_git,
+                git_commit_policy=git_commit_policy,
                 active_phase_selection=None,
                 enabled_pairs=enabled_pairs,
                 args=args,
@@ -4702,6 +4952,7 @@ def main() -> int:
                         recorder=recorder,
                         task_root_rel=task_root_rel,
                         use_git=use_git,
+                        git_commit_policy=git_commit_policy,
                         active_phase_selection=current_phase_selection,
                         enabled_pairs=enabled_pairs,
                         args=args,
@@ -4772,7 +5023,12 @@ def main() -> int:
                 )
 
         if use_git:
-            commit_tracked_changes(root, "autoloop: successful completion", task_scoped_paths)
+            commit_tracked_changes(
+                root,
+                "autoloop: successful completion",
+                task_scoped_paths,
+                git_commit_policy=git_commit_policy,
+            )
         print("\n[SUCCESS] All enabled pairs completed.")
         run_status = "success"
         exit_code = 0
@@ -4799,6 +5055,7 @@ def main() -> int:
                     root,
                     f"autoloop: finalize run artifacts ({run_status})",
                     task_scoped_paths,
+                    git_commit_policy=git_commit_policy,
                 )
 
 

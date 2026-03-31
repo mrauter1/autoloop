@@ -1,0 +1,6 @@
+<autoloop-decisions-header version="1" block_seq="1" owner="planner" phase_id="task-global" pair="plan" turn_seq="1" run_id="run-20260331T024912Z-6e51a780" ts="2026-03-31T02:49:12.959797+00:00" />
+Treat this retry as the same implementation scope as the earlier review-followup task; the new planning requirement is YAML-safe phase artifact serialization, not a scope change.
+Keep the work in one explicit phase so implement and test operate on one coherent staging-helper hardening slice with shared regression controls.
+<autoloop-decisions-header version="1" block_seq="2" owner="implementer" phase_id="harden-track-autoloop-artifact-git-paths" pair="implement" turn_seq="1" run_id="run-20260331T024912Z-6e51a780" ts="2026-03-31T02:51:43.303881+00:00" />
+Commit-related status inspection now uses `git status --porcelain -z` and consumes rename or copy records by their destination path so staged paths are safe for quoted filenames and special characters.
+Ignored tracked-path warnings now batch through `git ls-files -ci --exclude-standard -z` over task-root stageable candidates, preserving ignored-untracked versus ignored-tracked warning semantics without per-path git subprocesses.

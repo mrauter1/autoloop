@@ -1,0 +1,4 @@
+<autoloop-decisions-header version="1" block_seq="1" owner="planner" phase_id="task-global" pair="plan" turn_seq="1" run_id="run-20260331T024605Z-f6c77b20" ts="2026-03-31T02:46:05.384127+00:00" />
+Porcelain parsing must be hardened in the shared status helpers used by commit staging and tracked-change checks; the Codex P1 unquoting report is the same correctness bug as the quoted-path review item, not a separate behavior change.
+Ignored-but-tracked detection should stop using per-path `ls-files` checks and instead batch ignore matching only across non-`!!` task-root candidates already surfaced by `git status --porcelain --ignored`.
+`is_path_under_task_root(path, ".")` must treat the repo root as containing every repo-relative path while preserving existing prefix behavior for normal `.autoloop/...` and legacy `.superloop/...` task roots.

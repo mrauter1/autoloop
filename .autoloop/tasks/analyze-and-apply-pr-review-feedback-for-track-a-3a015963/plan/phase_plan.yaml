@@ -1,0 +1,38 @@
+version: 1
+task_id: analyze-and-apply-pr-review-feedback-for-track-a-3a015963
+request_snapshot_ref: /workspace/autoloop/.autoloop/tasks/analyze-and-apply-pr-review-feedback-for-track-a-3a015963/runs/run-20260331T024605Z-f6c77b20/request.md
+phases:
+  - phase_id: harden-track-autoloop-artifact-git-paths
+    title: Harden artifact staging path parsing and ignore detection
+    objective: Fix the validated correctness and performance issues in `track_autoloop_artifacts` commit filtering while preserving existing delta and verifier invariants.
+    status: planned
+    in_scope:
+      - Harden git status parsing used by staging and tracked-change detection so quoted porcelain paths, spaces, and rename/copy entries resolve to correct repo-relative paths.
+      - Make `is_path_under_task_root()` explicitly handle repo-root `.` as well as normal and legacy task roots.
+      - Replace per-path ignored-tracked subprocess checks with a batched task-root-aware approach that preserves ignored-untracked and ignored-tracked warning semantics.
+      - Add or update focused tests covering special-character filenames, repo-root task classification, and ignore/tracked warnings after the refactor.
+    out_of_scope:
+      - Changing producer/verifier raw delta attribution logic.
+      - Changing verifier scope checks or warning sources.
+      - Changing no-git behavior or the default meaning of `track_autoloop_artifacts`.
+      - Broader git workflow redesign outside the touched commit helper paths.
+    dependencies: []
+    acceptance_criteria:
+      - id: AC-1
+        text: Commit-related git status parsing uses a robust format that stages repo-relative paths with spaces or special characters correctly and does not regress rename/copy handling.
+      - id: AC-2
+        text: `is_path_under_task_root(path, ".")` treats repo-relative paths as inside the active root while existing `.autoloop` and `.superloop` prefix behavior remains correct.
+      - id: AC-3
+        text: Ignored tracked-path detection avoids per-path subprocess churn and preserves the current warning semantics for ignored untracked and ignored-but-tracked task-root paths.
+      - id: AC-4
+        text: Updated tests cover the new edge cases and existing `track_autoloop_artifacts` plumbing/regression expectations still pass.
+    deliverables:
+      - Updated plan-conformant git status parsing and commit candidate filtering in `src/autoloop/main.py`.
+      - Regression tests in the existing git-tracking and phase-helper test modules.
+    risks:
+      - Misreading `--porcelain -z` rename/copy record ordering could stage the wrong path.
+      - Batched ignore checks could accidentally suppress or duplicate warnings if task-root candidate narrowing is wrong.
+      - Touching shared status parsing helpers could affect change detection outside the commit path if not kept behaviorally equivalent for standard entries.
+    rollback:
+      - Revert the parsing and ignore-detection helper changes in `src/autoloop/main.py` while keeping the new tests to expose the failing edge cases.
+      - Restore the prior line-based parsing only if the `-z` helper cannot be made behaviorally safe under focused test coverage.
