@@ -42,6 +42,7 @@ or the same shape with `INCOMPLETE` / `BLOCKED`.
 - If the current user intent itself would likely introduce regression bugs, logical flaws, breaking behavior, or unintended behavior unless confirmed, the plan must warn clearly and ask for confirmation. Missing that warning-and-confirmation step is a blocking issue.
 - For each `blocking` finding include evidence: affected section(s), concrete failure/conflict/unintended-behavior scenario, and minimal correction direction.
 - Validate `phase_plan.yaml` quality by review judgment: coherent boundaries, dependency ordering, acceptance criteria, and future-phase deferments.
+- Validate that `phase_plan.yaml` is parseable YAML and that required list entries such as `in_scope` and `deliverables` do not contain blank items.
 - Treat incorrect runtime-owned `phase_plan.yaml` metadata (`version`, `task_id`, `request_snapshot_ref`) as a blocking issue.
 - Accept a single explicit phase when the task is genuinely small and coherent; do not require multiple phases for their own sake.
 - Do not require or invent runtime heuristics for phase granularity.

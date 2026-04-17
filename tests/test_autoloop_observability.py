@@ -531,6 +531,7 @@ def test_main_resolves_provider_config_before_codex_command(tmp_path: Path, monk
         "resolve_codex_exec_command",
         lambda provider: captured.append(provider) or fake_codex_command(),
     )
+    monkeypatch.setattr(autoloop, "validate_plan_pair_phase_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
     monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: control)
     monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)
@@ -949,6 +950,104 @@ def test_validate_phase_plan_still_requires_non_empty_required_lists():
         )
 
 
+def test_validate_plan_pair_phase_plan_reports_whitespace_only_in_scope_entry(tmp_path: Path, monkeypatch):
+    install_fake_yaml(monkeypatch)
+    paths = ensure_workspace(tmp_path, "phase-plan-task", "Implement feature X", "replace")
+    write_phase_plan(
+        phase_plan_file(paths["task_dir"]),
+        "phase-plan-task",
+        phases=[
+            {
+                "phase_id": "phase-1",
+                "title": "Phase 1",
+                "objective": "First",
+                "in_scope": ["valid", "   "],
+                "deliverables": ["code"],
+                "status": "planned",
+            }
+        ],
+    )
+
+    error = autoloop.validate_plan_pair_phase_plan(paths["task_dir"])
+
+    assert error == "phases[1].in_scope[2] must be a non-empty string."
+
+
+def test_execute_pair_cycles_plan_complete_downgrades_invalid_phase_plan(tmp_path: Path, monkeypatch):
+    install_fake_yaml(monkeypatch)
+    paths = ensure_workspace(tmp_path, "task-1", "Implement feature X", "replace")
+    run_paths = create_run_paths(paths["runs_dir"], "run-1", "Implement feature X")
+    recorder = EventRecorder(run_id="run-1", events_file=run_paths["events_file"])
+    bundle = autoloop.resolve_artifact_bundle(
+        root=tmp_path,
+        task_dir=paths["task_dir"],
+        task_id="task-1",
+        task_root_rel=str(paths["task_root_rel"]),
+        pair="plan",
+        active_phase_selection=None,
+    )
+    bundle.artifact_dir.mkdir(parents=True, exist_ok=True)
+    bundle.criteria_file.write_text("- [x] done\n", encoding="utf-8")
+    bundle.feedback_file.write_text("# feedback\n", encoding="utf-8")
+    write_phase_plan(
+        phase_plan_file(paths["task_dir"]),
+        "task-1",
+        phases=[
+            {
+                "phase_id": "phase-1",
+                "title": "Phase 1",
+                "objective": "First",
+                "in_scope": ["valid", ""],
+                "deliverables": ["code"],
+                "status": "planned",
+            }
+        ],
+    )
+
+    parse_results = [
+        autoloop.LoopControl(question=None, promise=None, source="canonical", raw_payload=None),
+        autoloop.LoopControl(question=None, promise=autoloop.PROMISE_COMPLETE, source="canonical", raw_payload=None),
+    ]
+
+    monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
+    monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: parse_results.pop(0))
+    monkeypatch.setattr(autoloop.time, "sleep", lambda _seconds: None)
+
+    status, code = execute_pair_cycles(
+        pair_cfg=PairConfig(name="plan", enabled=True, max_iterations=1),
+        pair="plan",
+        artifact_bundle=bundle,
+        session_file=run_paths["plan_session_file"],
+        root=tmp_path,
+        codex_command=fake_codex_command(),
+        run_id="run-1",
+        run_paths=run_paths,
+        paths=paths,
+        recorder=recorder,
+        task_root_rel=str(paths["task_root_rel"]),
+        use_git=False,
+        active_phase_selection=None,
+        enabled_pairs=["plan"],
+        args=argparse.Namespace(full_auto_answers=False),
+        resume_checkpoint=None,
+        use_resume_state=False,
+    )
+
+    assert (status, code) == ("failed", 1)
+    feedback_text = bundle.feedback_file.read_text(encoding="utf-8")
+    assert "invalid phase_plan.yaml" in feedback_text
+    assert "phases[1].in_scope[2] must be a non-empty string." in feedback_text
+    session_payload = json.loads(run_paths["plan_session_file"].read_text(encoding="utf-8"))
+    assert "Phase-plan validation feedback" in session_payload["pending_clarification_note"]
+    assert "phases[1].in_scope[2] must be a non-empty string." in session_payload["pending_clarification_note"]
+    events = [
+        json.loads(line)
+        for line in run_paths["events_file"].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert not any(event["event_type"] == "pair_completed" for event in events)
+
+
 def test_main_fatal_error_still_writes_terminal_event_without_summary(tmp_path: Path, monkeypatch):
     install_fake_yaml(monkeypatch)
     monkeypatch.setattr(autoloop, "check_dependencies", lambda require_git=True: None)
@@ -1244,6 +1343,7 @@ def test_resume_accepts_long_explicit_task_id(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(autoloop, "check_dependencies", lambda require_git=True: None)
     monkeypatch.setattr(autoloop, "resolve_codex_exec_command", lambda model: fake_codex_command())
+    monkeypatch.setattr(autoloop, "validate_plan_pair_phase_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
     monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: control)
     monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)
@@ -3461,6 +3561,7 @@ def test_main_resume_without_session_file_starts_new_conversation_and_logs_notic
 
     monkeypatch.setattr(autoloop, "check_dependencies", lambda require_git=True: None)
     monkeypatch.setattr(autoloop, "resolve_codex_exec_command", lambda model: fake_codex_command())
+    monkeypatch.setattr(autoloop, "validate_plan_pair_phase_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
     monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: control)
     monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)
@@ -3525,6 +3626,7 @@ def test_main_resume_with_missing_thread_id_starts_new_conversation_and_logs_not
 
     monkeypatch.setattr(autoloop, "check_dependencies", lambda require_git=True: None)
     monkeypatch.setattr(autoloop, "resolve_codex_exec_command", lambda model: fake_codex_command())
+    monkeypatch.setattr(autoloop, "validate_plan_pair_phase_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
     monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: control)
     monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)
@@ -3634,6 +3736,7 @@ def test_main_resume_reconstructs_missing_request_from_legacy_context_not_curren
 
     monkeypatch.setattr(autoloop, "check_dependencies", lambda require_git=True: None)
     monkeypatch.setattr(autoloop, "resolve_codex_exec_command", lambda model: fake_codex_command())
+    monkeypatch.setattr(autoloop, "validate_plan_pair_phase_plan", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(autoloop, "run_codex_phase", lambda *args, **kwargs: "<loop-control></loop-control>")
     monkeypatch.setattr(autoloop, "parse_phase_control", lambda *args, **kwargs: control)
     monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)

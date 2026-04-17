@@ -1459,6 +1459,42 @@ def validate_phase_plan(payload: object, task_id: str) -> PhasePlan:
     )
 
 
+def phase_plan_payload(plan: PhasePlan) -> Dict[str, object]:
+    return {
+        "version": plan.version,
+        "task_id": plan.task_id,
+        "request_snapshot_ref": plan.request_snapshot_ref,
+        "phases": [
+            {
+                "phase_id": phase.phase_id,
+                "title": phase.title,
+                "objective": phase.objective,
+                "status": phase.status,
+                "in_scope": list(phase.in_scope),
+                "out_of_scope": list(phase.out_of_scope),
+                "dependencies": list(phase.dependencies),
+                "acceptance_criteria": [
+                    {"id": criterion.id, "text": criterion.text} for criterion in phase.acceptance_criteria
+                ],
+                "deliverables": list(phase.deliverables),
+                "risks": list(phase.risks),
+                "rollback": list(phase.rollback),
+            }
+            for phase in plan.phases
+        ],
+    }
+
+
+def write_phase_plan(path: Path, plan: PhasePlan) -> None:
+    payload = phase_plan_payload(plan)
+    dump_fn = getattr(yaml, "safe_dump", None)
+    if callable(dump_fn):
+        serialized = dump_fn(payload, sort_keys=False, allow_unicode=True)
+    else:
+        serialized = json.dumps(payload, indent=2) + "\n"
+    path.write_text(serialized, encoding="utf-8")
+
+
 def load_phase_plan(path: Path, task_id: str) -> Optional[PhasePlan]:
     if not path.exists():
         return None
@@ -1473,6 +1509,22 @@ def load_phase_plan(path: Path, task_id: str) -> Optional[PhasePlan]:
     except OSError as exc:
         raise PhasePlanError(f"{path} could not be read: {exc}") from exc
     return validate_phase_plan(payload, task_id)
+
+
+def validate_plan_pair_phase_plan(task_dir: Path) -> Optional[str]:
+    plan_path = phase_plan_file(task_dir)
+    task_id = task_dir.name
+    try:
+        plan = load_phase_plan(plan_path, task_id)
+    except PhasePlanError as exc:
+        return str(exc)
+    if plan is None:
+        return "phase_plan.yaml is missing."
+    try:
+        write_phase_plan(plan_path, plan)
+    except OSError as exc:
+        return f"{plan_path} could not be rewritten canonically: {exc}"
+    return None
 
 
 def build_implicit_phase_plan(task_id: str, request_file: Path) -> PhasePlan:
@@ -3485,6 +3537,21 @@ def build_loop_control_retry_feedback(pair_name: str, phase_name: str, error: st
     )
 
 
+def append_system_feedback_warning(feedback_file: Path, cycle_num: int, warning: str) -> None:
+    with feedback_file.open("a", encoding="utf-8") as f:
+        f.write(f"\n\n## System Warning (cycle {cycle_num})\n{warning}\n")
+
+
+def build_phase_plan_validation_feedback(error: str) -> str:
+    return (
+        "Phase-plan validation feedback:\n"
+        "The current phase_plan.yaml is invalid.\n"
+        f"Validation error: {error}\n"
+        "Rewrite the file so it parses as YAML and every required list entry is non-empty. "
+        "Preserve the runtime-owned metadata keys."
+    )
+
+
 def set_pending_session_note(session_file: Path, note: str) -> None:
     session_state = load_session_state(session_file, "persistent")
     session_state.pending_clarification_note = note
@@ -4376,6 +4443,20 @@ def execute_pair_cycles(
             if use_git
             else set()
         )
+        if pair == "plan" and verifier_decision.action == "complete":
+            phase_plan_error = validate_plan_pair_phase_plan(paths["task_dir"])
+            if phase_plan_error is not None:
+                verifier_decision = PhaseControlDecision(
+                    action="incomplete",
+                    warning=(
+                        "verifier emitted COMPLETE with invalid phase_plan.yaml; "
+                        f"downgrading to INCOMPLETE in lax guard mode: {phase_plan_error}"
+                    ),
+                )
+                set_pending_session_note(
+                    session_file,
+                    build_phase_plan_validation_feedback(phase_plan_error),
+                )
 
         if verifier_decision.action == "question":
             recorder.emit("question", pair=pair, phase="verifier", cycle=cycle_num, attempt=attempt_num)
@@ -4434,16 +4515,12 @@ def execute_pair_cycles(
 
         if verifier_control.promise is None:
             recorder.emit("missing_promise_default", pair=pair, cycle=cycle_num, attempt=attempt_num)
-            with artifact_bundle.feedback_file.open("a", encoding="utf-8") as f:
-                f.write(
-                    f"\n\n## System Warning (cycle {cycle_num})\n"
-                    f"{verifier_decision.warning}\n"
-                )
+        if verifier_decision.warning:
+            append_system_feedback_warning(artifact_bundle.feedback_file, cycle_num, verifier_decision.warning)
             verifier_delta.add(repo_relative_path(root, artifact_bundle.feedback_file))
 
         if verifier_control.promise == PROMISE_COMPLETE and verifier_decision.warning:
             warn(f"{pair} {verifier_decision.warning}")
-            verifier_delta.add(repo_relative_path(root, artifact_bundle.feedback_file))
 
         if verifier_decision.action == "complete":
             print(f"[SUCCESS] Pair `{pair}` completed.")
