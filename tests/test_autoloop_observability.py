@@ -973,6 +973,52 @@ def test_validate_plan_pair_phase_plan_reports_whitespace_only_in_scope_entry(tm
     assert error == "phases[1].in_scope[2] must be a non-empty string."
 
 
+def test_load_phase_plan_recovers_leading_backtick_scalar_and_rewrites_file(tmp_path: Path):
+    if autoloop.yaml is None:
+        pytest.skip("PyYAML is required for phase plan recovery tests.")
+
+    paths = ensure_workspace(tmp_path, "phase-plan-task", "Implement feature X", "replace")
+    plan_path = phase_plan_file(paths["task_dir"])
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "task_id: phase-plan-task",
+                "request_snapshot_ref: request.md",
+                "phases:",
+                "  - phase_id: phase-1",
+                '    title: "Phase 1"',
+                '    objective: "Handle root paths safely"',
+                "    status: planned",
+                "    in_scope:",
+                '      - "Implement the behavior change"',
+                "    out_of_scope: []",
+                "    dependencies: []",
+                "    acceptance_criteria:",
+                "      - id: AC-1",
+                '        text: `is_path_under_task_root(path, ".")` classifies repo-relative paths correctly.',
+                "    deliverables:",
+                '      - "code"',
+                "    risks: []",
+                "    rollback: []",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plan = load_phase_plan(plan_path, "phase-plan-task")
+
+    assert plan is not None
+    assert plan.phases[0].acceptance_criteria[0].text == (
+        '`is_path_under_task_root(path, ".")` classifies repo-relative paths correctly.'
+    )
+    rewritten = plan_path.read_text(encoding="utf-8")
+    assert 'classifies repo-relative paths correctly.' in rewritten
+    assert 'text: `is_path_under_task_root(path, ".")`' not in rewritten
+
+
 def test_execute_pair_cycles_plan_complete_downgrades_invalid_phase_plan(tmp_path: Path, monkeypatch):
     install_fake_yaml(monkeypatch)
     paths = ensure_workspace(tmp_path, "task-1", "Implement feature X", "replace")
@@ -1035,7 +1081,7 @@ def test_execute_pair_cycles_plan_complete_downgrades_invalid_phase_plan(tmp_pat
 
     assert (status, code) == ("failed", 1)
     feedback_text = bundle.feedback_file.read_text(encoding="utf-8")
-    assert "invalid phase_plan.yaml" in feedback_text
+    assert "The current phase_plan.yaml is invalid." in feedback_text
     assert "phases[1].in_scope[2] must be a non-empty string." in feedback_text
     session_payload = json.loads(run_paths["plan_session_file"].read_text(encoding="utf-8"))
     assert "Phase-plan validation feedback" in session_payload["pending_clarification_note"]
@@ -1046,6 +1092,143 @@ def test_execute_pair_cycles_plan_complete_downgrades_invalid_phase_plan(tmp_pat
         if line.strip()
     ]
     assert not any(event["event_type"] == "pair_completed" for event in events)
+
+
+def test_execute_pair_cycles_plan_retries_unrecoverable_phase_plan_parse_error_before_verifier(tmp_path: Path, monkeypatch):
+    if autoloop.yaml is None:
+        pytest.skip("PyYAML is required for phase plan recovery tests.")
+
+    paths = ensure_workspace(tmp_path, "task-1", "Implement feature X", "replace")
+    run_paths = create_run_paths(paths["runs_dir"], "run-1", "Implement feature X")
+    recorder = EventRecorder(run_id="run-1", events_file=run_paths["events_file"])
+    bundle = autoloop.resolve_artifact_bundle(
+        root=tmp_path,
+        task_dir=paths["task_dir"],
+        task_id="task-1",
+        task_root_rel=str(paths["task_root_rel"]),
+        pair="plan",
+        active_phase_selection=None,
+    )
+    bundle.artifact_dir.mkdir(parents=True, exist_ok=True)
+    bundle.criteria_file.write_text("- [x] done\n", encoding="utf-8")
+    bundle.feedback_file.write_text("# feedback\n", encoding="utf-8")
+    calls: list[str] = []
+
+    invalid_phase_plan = "\n".join(
+        [
+            "version: 1",
+            "task_id: task-1",
+            "request_snapshot_ref: request.md",
+            "phases:",
+            "  - phase_id: phase-1",
+            '    title: "Phase 1"',
+            '    objective: "First"',
+            "    status: planned",
+            "    in_scope:",
+            '      - "valid"',
+            "    out_of_scope: []",
+            "    dependencies: []",
+            "    acceptance_criteria:",
+            "      - id: AC-1",
+            "        text: [unterminated",
+            "    deliverables:",
+            '      - "code"',
+            "    risks: []",
+            "    rollback: []",
+            "",
+        ]
+    )
+    fixed_phase_plan = "\n".join(
+        [
+            "version: 1",
+            "task_id: task-1",
+            "request_snapshot_ref: request.md",
+            "phases:",
+            "  - phase_id: phase-1",
+            '    title: "Phase 1"',
+            '    objective: "First"',
+            "    status: planned",
+            "    in_scope:",
+            '      - "valid"',
+            "    out_of_scope: []",
+            "    dependencies: []",
+            "    acceptance_criteria:",
+            "      - id: AC-1",
+            '        text: "Repo-relative paths stay valid."',
+            "    deliverables:",
+            '      - "code"',
+            "    risks: []",
+            "    rollback: []",
+            "",
+        ]
+    )
+    phase_plan_file(paths["task_dir"]).write_text(invalid_phase_plan, encoding="utf-8")
+    expected_error = autoloop.validate_plan_pair_phase_plan(paths["task_dir"])
+    assert expected_error is not None
+
+    def fake_run_codex_phase(*args, **kwargs):
+        phase_name = args[4]
+        session_payload = json.loads(Path(args[10]).read_text(encoding="utf-8"))
+        calls.append(phase_name)
+        if phase_name == "producer" and calls.count("producer") == 1:
+            assert session_payload["pending_clarification_note"] is None
+            phase_plan_file(paths["task_dir"]).write_text(invalid_phase_plan, encoding="utf-8")
+            return (
+                '<loop-control>\n'
+                '{"schema":"docloop.loop_control/v1","kind":"promise","promise":"INCOMPLETE"}\n'
+                "</loop-control>"
+            )
+        if phase_name == "producer":
+            assert "Phase-plan validation feedback" in session_payload["pending_clarification_note"]
+            assert expected_error in session_payload["pending_clarification_note"]
+            phase_plan_file(paths["task_dir"]).write_text(fixed_phase_plan, encoding="utf-8")
+            return (
+                '<loop-control>\n'
+                '{"schema":"docloop.loop_control/v1","kind":"promise","promise":"INCOMPLETE"}\n'
+                "</loop-control>"
+            )
+        assert phase_name == "verifier"
+        return (
+            '<loop-control>\n'
+            '{"schema":"docloop.loop_control/v1","kind":"promise","promise":"COMPLETE"}\n'
+            "</loop-control>"
+        )
+
+    monkeypatch.setattr(autoloop, "commit_tracked_changes", lambda *args, **kwargs: False)
+    monkeypatch.setattr(autoloop, "run_codex_phase", fake_run_codex_phase)
+    monkeypatch.setattr(autoloop, "criteria_all_checked", lambda *_args, **_kwargs: True)
+
+    status, code = execute_pair_cycles(
+        pair_cfg=PairConfig(name="plan", enabled=True, max_iterations=1),
+        pair="plan",
+        artifact_bundle=bundle,
+        session_file=run_paths["plan_session_file"],
+        root=tmp_path,
+        codex_command=fake_codex_command(),
+        run_id="run-1",
+        run_paths=run_paths,
+        paths=paths,
+        recorder=recorder,
+        task_root_rel=str(paths["task_root_rel"]),
+        use_git=False,
+        active_phase_selection=None,
+        enabled_pairs=["plan"],
+        args=argparse.Namespace(full_auto_answers=False),
+        resume_checkpoint=None,
+        use_resume_state=False,
+    )
+
+    assert (status, code) == ("complete", 0)
+    assert calls == ["producer", "producer", "verifier"]
+    run_raw_text = run_paths["raw_phase_log"].read_text(encoding="utf-8")
+    assert "entry=phase_plan_retry" in run_raw_text
+    assert expected_error in run_raw_text
+
+
+def test_plan_producer_prompt_requires_local_phase_plan_parse():
+    _template_path, template_text = autoloop.rendered_pair_template("plan", "producer", ".autoloop/tasks/demo")
+
+    assert "parse it locally with PyYAML `yaml.safe_load` before ending the turn" in template_text
 
 
 def test_main_fatal_error_still_writes_terminal_event_without_summary(tmp_path: Path, monkeypatch):

@@ -48,6 +48,7 @@ phases:
 
 Only author or update entries under phases:. Do not edit or replace version, task_id, or request_snapshot_ref; those keys are runtime-owned and incorrect changes are invalid.
 Prefer double-quoted YAML strings for authored scalar values under `phases`, and never emit blank list bullets or empty quoted strings in required lists such as `in_scope` and `deliverables`.
+After editing `.autoloop/plan/phase_plan.yaml`, parse it locally with PyYAML `yaml.safe_load` before ending the turn. If parsing fails, fix the file and re-parse until it succeeds.
 
 Rules
 	1.	Analyze codebase areas and behaviors relevant to the current user request first. Broaden analysis scope when justified: cross-cutting patterns must be checked, dependencies are unclear, behavior may be reused elsewhere, or the repository/files are small enough that full analysis is cheaper and safer.

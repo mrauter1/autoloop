@@ -91,6 +91,9 @@ RUNTIME_PHASE_STATUSES = {
 IMPLICIT_PHASE_ID = "implicit-phase"
 MAX_PHASE_ID_UTF8_BYTES = 96
 PHASE_DIR_SAFE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+PHASE_PLAN_BACKTICK_PARSE_FRAGMENT = "found character '`' that cannot start any token"
+PHASE_PLAN_INLINE_SCALAR_RE = re.compile(r"^(\s*(?:-\s+)?[A-Za-z0-9_.-]+\s*:\s*)(.+?)(\r?\n?)$")
+PHASE_PLAN_LIST_ITEM_SCALAR_RE = re.compile(r"^(\s*-\s+)(.+?)(\r?\n?)$")
 DEFAULT_CODEX_MODEL = "gpt-5.4"
 DEFAULT_PROVIDER_NAME = "codex"
 SUPPORTED_PROVIDER_NAMES = frozenset({"codex", "claude"})
@@ -1495,6 +1498,42 @@ def write_phase_plan(path: Path, plan: PhasePlan) -> None:
     path.write_text(serialized, encoding="utf-8")
 
 
+def normalize_phase_plan_leading_backtick_scalars(text: str) -> Tuple[str, bool]:
+    normalized_lines: List[str] = []
+    changed = False
+    for line in text.splitlines(keepends=True):
+        updated_line = line
+        mapping_match = PHASE_PLAN_INLINE_SCALAR_RE.match(line)
+        if mapping_match:
+            prefix, value, line_ending = mapping_match.groups()
+            stripped = value.lstrip()
+            if stripped.startswith("`"):
+                leading_ws = value[: len(value) - len(stripped)]
+                updated_line = f"{prefix}{leading_ws}{json.dumps(stripped, ensure_ascii=False)}{line_ending}"
+        else:
+            list_match = PHASE_PLAN_LIST_ITEM_SCALAR_RE.match(line)
+            if list_match:
+                prefix, value, line_ending = list_match.groups()
+                stripped = value.lstrip()
+                if stripped.startswith("`"):
+                    leading_ws = value[: len(value) - len(stripped)]
+                    updated_line = f"{prefix}{leading_ws}{json.dumps(stripped, ensure_ascii=False)}{line_ending}"
+        if updated_line != line:
+            changed = True
+        normalized_lines.append(updated_line)
+    return "".join(normalized_lines), changed
+
+
+def try_recover_phase_plan_yaml(path: Path, text: str, error: str) -> bool:
+    if PHASE_PLAN_BACKTICK_PARSE_FRAGMENT not in error:
+        return False
+    normalized_text, changed = normalize_phase_plan_leading_backtick_scalars(text)
+    if not changed:
+        return False
+    path.write_text(normalized_text, encoding="utf-8")
+    return True
+
+
 def load_phase_plan(path: Path, task_id: str) -> Optional[PhasePlan]:
     if not path.exists():
         return None
@@ -1503,12 +1542,30 @@ def load_phase_plan(path: Path, task_id: str) -> Optional[PhasePlan]:
             "phase_plan.yaml cannot be loaded without PyYAML installed. Install dependencies from requirements.txt."
         )
     try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        raise PhasePlanError(f"{path} could not be parsed as YAML: {exc}") from exc
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise PhasePlanError(f"{path} could not be read: {exc}") from exc
-    return validate_phase_plan(payload, task_id)
+    recovered = False
+    try:
+        payload = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        if not try_recover_phase_plan_yaml(path, text, str(exc)):
+            raise PhasePlanError(f"{path} could not be parsed as YAML: {exc}") from exc
+        recovered = True
+        recovered_text = path.read_text(encoding="utf-8")
+        try:
+            payload = yaml.safe_load(recovered_text)
+        except yaml.YAMLError as retry_exc:
+            raise PhasePlanError(f"{path} could not be parsed as YAML: {retry_exc}") from retry_exc
+        except OSError as retry_read_exc:
+            raise PhasePlanError(f"{path} could not be read: {retry_read_exc}") from retry_read_exc
+    plan = validate_phase_plan(payload, task_id)
+    if recovered:
+        try:
+            write_phase_plan(path, plan)
+        except OSError as exc:
+            raise PhasePlanError(f"{path} could not be rewritten canonically: {exc}") from exc
+    return plan
 
 
 def validate_plan_pair_phase_plan(task_dir: Path) -> Optional[str]:
@@ -3548,7 +3605,8 @@ def build_phase_plan_validation_feedback(error: str) -> str:
         "The current phase_plan.yaml is invalid.\n"
         f"Validation error: {error}\n"
         "Rewrite the file so it parses as YAML and every required list entry is non-empty. "
-        "Preserve the runtime-owned metadata keys."
+        "Preserve the runtime-owned metadata keys. After editing, parse phase_plan.yaml with "
+        "PyYAML yaml.safe_load before ending the turn."
     )
 
 
@@ -3558,13 +3616,15 @@ def set_pending_session_note(session_file: Path, note: str) -> None:
     save_session_state(session_file, session_state)
 
 
-def retry_phase_after_parse_error(
+def rerun_phase_with_feedback_note(
     *,
     phase_name: str,
     pair: str,
     cycle_num: int,
     attempt_num: int,
     feedback_note: str,
+    warning_message: str,
+    log_entry: str,
     session_file: Path,
     run_id: str,
     run_paths: Dict[str, Path],
@@ -3579,13 +3639,11 @@ def retry_phase_after_parse_error(
     prior_phase_ids: Sequence[str],
     prior_phase_keys: Sequence[str],
 ) -> str:
-    warn(
-        f"{pair} {phase_name} emitted malformed or conflicting loop-control output; retrying once with parse feedback."
-    )
+    warn(warning_message)
     append_runtime_raw_log(
         paths["raw_phase_log"],
         run_id,
-        "loop_control_retry",
+        log_entry,
         feedback_note,
         pair=pair,
         phase=phase_name,
@@ -3595,7 +3653,7 @@ def retry_phase_after_parse_error(
     append_runtime_raw_log(
         run_paths["raw_phase_log"],
         run_id,
-        "loop_control_retry",
+        log_entry,
         feedback_note,
         pair=pair,
         phase=phase_name,
@@ -3644,6 +3702,54 @@ def retry_phase_after_parse_error(
         )
         warn(f"{pair} {phase_name} returned empty stdout (cycle {cycle_num}, attempt {attempt_num}) on retry.")
     return retry_stdout
+
+
+def retry_phase_after_parse_error(
+    *,
+    phase_name: str,
+    pair: str,
+    cycle_num: int,
+    attempt_num: int,
+    feedback_note: str,
+    session_file: Path,
+    run_id: str,
+    run_paths: Dict[str, Path],
+    paths: Dict[str, Path],
+    recorder: EventRecorder,
+    active_phase_selection: Optional[ResolvedPhaseSelection],
+    provider_runtime: ProviderRuntime,
+    root: Path,
+    template_provenance: str,
+    template_text: str,
+    artifact_bundle: ArtifactBundle,
+    prior_phase_ids: Sequence[str],
+    prior_phase_keys: Sequence[str],
+) -> str:
+    return rerun_phase_with_feedback_note(
+        phase_name=phase_name,
+        pair=pair,
+        cycle_num=cycle_num,
+        attempt_num=attempt_num,
+        feedback_note=feedback_note,
+        warning_message=(
+            f"{pair} {phase_name} emitted malformed or conflicting loop-control output; "
+            "retrying once with parse feedback."
+        ),
+        log_entry="loop_control_retry",
+        session_file=session_file,
+        run_id=run_id,
+        run_paths=run_paths,
+        paths=paths,
+        recorder=recorder,
+        active_phase_selection=active_phase_selection,
+        provider_runtime=provider_runtime,
+        root=root,
+        template_provenance=template_provenance,
+        template_text=template_text,
+        artifact_bundle=artifact_bundle,
+        prior_phase_ids=prior_phase_ids,
+        prior_phase_keys=prior_phase_keys,
+    )
 
 
 def parse_phase_control(
@@ -4283,30 +4389,9 @@ def execute_pair_cycles(
                 prior_phase_keys=prior_phase_keys,
             )
 
-        producer_control = parse_phase_control(
-            producer_stdout,
-            "producer",
-            pair,
-            retry_once=retry_producer_parse_once,
-        )
-        producer_decision = decide_producer_control(producer_control)
-        producer_delta = (
-            filter_volatile_task_run_paths(changed_paths_from_snapshot(root, producer_baseline), task_root_rel)
-            if use_git
-            else set()
-        )
-        remove_trailing_empty_decisions_block(
-            paths["decisions_file"],
-            owner=decisions_owner(pair),
-            pair=pair,
-            phase_id=ledger_phase_id,
-            turn_seq=producer_turn_seq,
-            run_id=run_id,
-        )
-
-        if producer_decision.action == "question":
+        def handle_producer_question(control: LoopControl) -> None:
             recorder.emit("question", pair=pair, phase="producer", cycle=cycle_num, attempt=attempt_num)
-            producer_question = format_question(producer_control)
+            producer_question = format_question(control)
             if args.full_auto_answers:
                 answer = auto_answer_question(
                     provider_runtime,
@@ -4349,7 +4434,101 @@ def execute_pair_cycles(
                     pair_tracked,
                     git_commit_policy=git_commit_policy,
                 )
+
+        producer_control = parse_phase_control(
+            producer_stdout,
+            "producer",
+            pair,
+            retry_once=retry_producer_parse_once,
+        )
+        producer_decision = decide_producer_control(producer_control)
+        if producer_decision.action == "question":
+            remove_trailing_empty_decisions_block(
+                paths["decisions_file"],
+                owner=decisions_owner(pair),
+                pair=pair,
+                phase_id=ledger_phase_id,
+                turn_seq=producer_turn_seq,
+                run_id=run_id,
+            )
+            handle_producer_question(producer_control)
             continue
+
+        if pair == "plan":
+            phase_plan_error = validate_plan_pair_phase_plan(paths["task_dir"])
+            if phase_plan_error is not None:
+                producer_stdout = rerun_phase_with_feedback_note(
+                    phase_name="producer",
+                    pair=pair,
+                    cycle_num=cycle_num,
+                    attempt_num=attempt_num,
+                    feedback_note=build_phase_plan_validation_feedback(phase_plan_error),
+                    warning_message=(
+                        "plan producer wrote an invalid phase_plan.yaml; "
+                        "retrying once with the validation error."
+                    ),
+                    log_entry="phase_plan_retry",
+                    session_file=session_file,
+                    run_id=run_id,
+                    run_paths=run_paths,
+                    paths=paths,
+                    recorder=recorder,
+                    active_phase_selection=active_phase_selection,
+                    provider_runtime=provider_runtime,
+                    root=root,
+                    template_provenance=producer_template_provenance,
+                    template_text=producer_template_text,
+                    artifact_bundle=artifact_bundle,
+                    prior_phase_ids=prior_phase_ids,
+                    prior_phase_keys=prior_phase_keys,
+                )
+                producer_control = parse_phase_control(
+                    producer_stdout,
+                    "producer",
+                    pair,
+                    retry_once=retry_producer_parse_once,
+                )
+                producer_decision = decide_producer_control(producer_control)
+                if producer_decision.action == "question":
+                    remove_trailing_empty_decisions_block(
+                        paths["decisions_file"],
+                        owner=decisions_owner(pair),
+                        pair=pair,
+                        phase_id=ledger_phase_id,
+                        turn_seq=producer_turn_seq,
+                        run_id=run_id,
+                    )
+                    handle_producer_question(producer_control)
+                    continue
+                phase_plan_error = validate_plan_pair_phase_plan(paths["task_dir"])
+                if phase_plan_error is not None:
+                    remove_trailing_empty_decisions_block(
+                        paths["decisions_file"],
+                        owner=decisions_owner(pair),
+                        pair=pair,
+                        phase_id=ledger_phase_id,
+                        turn_seq=producer_turn_seq,
+                        run_id=run_id,
+                    )
+                    phase_plan_feedback = build_phase_plan_validation_feedback(phase_plan_error)
+                    append_system_feedback_warning(artifact_bundle.feedback_file, cycle_num, phase_plan_feedback)
+                    set_pending_session_note(session_file, phase_plan_feedback)
+                    warn(f"plan producer left invalid phase_plan.yaml after one repair retry: {phase_plan_error}")
+                    return "failed", 1
+
+        producer_delta = (
+            filter_volatile_task_run_paths(changed_paths_from_snapshot(root, producer_baseline), task_root_rel)
+            if use_git
+            else set()
+        )
+        remove_trailing_empty_decisions_block(
+            paths["decisions_file"],
+            owner=decisions_owner(pair),
+            pair=pair,
+            phase_id=ledger_phase_id,
+            turn_seq=producer_turn_seq,
+            run_id=run_id,
+        )
 
         if producer_decision.action == "ignore_promise":
             warn(
