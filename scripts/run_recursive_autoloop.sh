@@ -14,7 +14,7 @@ set -euo pipefail
 
 WORKSPACE="$(pwd)"
 CYCLES="${CYCLES:-4}"          # total autoloop runs (>=2 recommended)
-BASE_TASK_ID="${BASE_TASK_ID:-recursive-framework-evolution}"
+BASE_TASK_ID="${BASE_TASK_ID:-recursive-framework-evolution-$(date +%Y%m%dT%H%M%S)}"
 STATE_DIR_NAME=".autoloop_recursive"
 
 while [[ $# -gt 0 ]]; do
